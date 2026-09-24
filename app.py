@@ -2740,6 +2740,8 @@ def execute_hc_search(search_lower, context_input, sort_order, cascade, field_fi
         parquet_src = f"read_parquet('{str(STUDY_PATH)}')"
     elif field in _USER_GROUP_FILTER_FIELDS:
         parquet_src = f"read_parquet('{str(USER_GROUP_PATH)}')"
+    elif field in _QMNEM_FILTER_FIELDS:
+        parquet_src = f"read_parquet('{str(QMNEM_PATH)}')"
     else:
         parquet_src = f"read_parquet('{str(USAGE_PATH)}')"
 
@@ -3014,6 +3016,8 @@ def _build_cascade_where(field_filters, current_field):
             filter_table = "study"
         elif f in _USER_GROUP_FILTER_FIELDS:
             filter_table = "user_group"
+        elif f in _QMNEM_FILTER_FIELDS:
+            filter_table = "qmnem"
         else:
             filter_table = "usage"
 
@@ -3022,6 +3026,8 @@ def _build_cascade_where(field_filters, current_field):
             current_table = "study"
         elif current_field in _USER_GROUP_FILTER_FIELDS:
             current_table = "user_group"
+        elif current_field in _QMNEM_FILTER_FIELDS:
+            current_table = "qmnem"
         else:
             current_table = "usage"
 
