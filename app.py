@@ -724,6 +724,7 @@ app.layout = html.Div([
     dcc.Store(id="ws-last-sql",            data={}, storage_type="memory"),
     dcc.Store(id="sql-display-payload",    data=""),
     dcc.Download(id="download-data"),
+    dcc.Download(id="download-crosstab"),
 
     html.Button(id="rename-trigger-btn",        style={"display": "none"}),
     html.Button(id="drop-trigger-btn",          style={"display": "none"}),
@@ -3540,26 +3541,21 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
                             row_total=ws_cfg.get("row_grand_total", "first"),
                             df_summary=df_summary)
 
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk(); root.withdraw()
-        root.wm_attributes('-topmost', True)
-        filepath = filedialog.asksaveasfilename(
-            parent=root, defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            initialfile=f"{active_tab.replace(' ', '_')}.xlsx",
-            title="Save Export As"
+        import io
+        output = io.BytesIO()
+        df.to_excel(output, index=False)
+        output.seek(0)
+        return dcc.send_bytes(
+            output.getvalue(),
+            filename=f"{active_tab.replace(' ', '_')}.xlsx"
         )
-        root.destroy()
-        if filepath:
-            df.to_excel(filepath, index=False)
-            print(f"Export saved to {filepath}")
     except Exception as e:
         print(f"Export error: {e}")
     raise dash.exceptions.PreventUpdate
 
 
 @app.callback(
+    Output("download-crosstab", "data"),
     Input({"type": "export-crosstab-btn", "index": ALL}, "n_clicks"),
     State({"type": "ws-rows",          "index": ALL}, "data"),
     State({"type": "ws-cols",          "index": ALL}, "data"),
@@ -3678,22 +3674,8 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
                             
         display_df = apply_row_blanking(df, rows)
 
-        import tkinter as tk
-        from tkinter import filedialog
         import openpyxl
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-
-        root = tk.Tk(); root.withdraw()
-        root.wm_attributes('-topmost', True)
-        filepath = filedialog.asksaveasfilename(
-            parent=root, defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            initialfile=f"{active_tab.replace(' ', '_')}_crosstab.xlsx",
-            title="Save Crosstab As"
-        )
-        root.destroy()
-        if not filepath:
-            raise dash.exceptions.PreventUpdate
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -3763,8 +3745,14 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
             ].width = min(max_len + 2, 40)
 
         ws.freeze_panes = "A2"
-        wb.save(filepath)
-        print(f"Crosstab saved to {filepath}")
+        import io
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return dcc.send_bytes(
+            output.getvalue(),
+            filename=f"{active_tab.replace(' ', '_')}_crosstab.xlsx"
+        )
 
     except dash.exceptions.PreventUpdate:
         raise
