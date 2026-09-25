@@ -3087,7 +3087,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         result = html.P("Add at least one field to Rows or Columns.",
                        className="text-warning p-3")
         return [result if i == ti else dash.no_update
-                for i in range(len(n_clicks))], dash.no_update, dash.no_update
+                for i in range(len(n_clicks))], dash.no_update, dash.no_update, False
 
     # Validate QMNEM requires at least one study field
     STUDY_FIELDS = {"LONG_NAME", "EXT_STUDY_ID", "STUDYID", "STUDYYEAR"}
@@ -3102,7 +3102,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                 color="warning", className="p-3", style={"fontSize": "13px"}
             )
             return [result if i == ti else dash.no_update
-                    for i in range(len(n_clicks))], dash.no_update, dash.no_update
+                    for i in range(len(n_clicks))], dash.no_update, dash.no_update, False
 
     # Separate formula calcs from regular fields — formula calcs don't exist
     # in the parquet and must be computed post-query via apply_calculation
@@ -3132,7 +3132,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         result = html.P("Add at least one non-formula field to Rows or Columns.",
                        className="text-warning p-3")
         return [result if i == ti else dash.no_update
-                for i in range(len(n_clicks))], dash.no_update, dash.no_update
+                for i in range(len(n_clicks))], dash.no_update, dash.no_update, False
 
     needs_qmnem     = False
     duck_where      = []
