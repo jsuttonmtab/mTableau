@@ -3203,7 +3203,12 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                                "date_formats": date_formats, "measure": measure}, f)
             except Exception as e:
                 print(f"Could not save result: {e}")
-                
+
+            # Initialize truncation tracking for all DuckDB paths
+            full_row_count = len(df)
+            MAX_DISPLAY_ROWS = 1000
+            display_truncated = False
+
             if "Count" in df.columns and cols:
                 ws_key = triggered["index"]
                 ws_cfg = (ws_settings or {}).get(ws_key, {})
@@ -3244,13 +3249,22 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                         df_summary.to_parquet(results_dir / f"{ws_key}.summary.parquet", index=False)
                     except Exception:
                         pass
-                        
+
+                # Truncate for display — full data is in parquet for export
+                display_truncated = len(df) > MAX_DISPLAY_ROWS
+                if display_truncated:
+                    df = df.iloc[:MAX_DISPLAY_ROWS].copy()
+
                 df = apply_pivot(df, rows, cols,
                                  col_total=ws_cfg.get("col_grand_total", "last"),
                                  row_total=ws_cfg.get("row_grand_total", "first"),
                                  df_summary=df_summary)
         else:
             df = run_query(sql, params)
+            # Truncate for display — no parquet saved in non-DuckDB path
+            display_truncated = len(df) > MAX_DISPLAY_ROWS
+            if display_truncated:
+                df = df.iloc[:MAX_DISPLAY_ROWS].copy()
 
         # Post-pivot formulas (non-FIXED, e.g. math on Count columns)
         if global_calcs and isinstance(global_calcs, dict):
@@ -3268,10 +3282,18 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         _save_ws_state(triggered["index"], rows, cols, filters,
                        field_filters, date_formats, measure)
 
+        # Build row count message with truncation notice if applicable
+        row_count_msg = f"{len(display_df):,} rows returned"
+        try:
+            if display_truncated:
+                row_count_msg += " — showing first 1,000. Export for full data."
+        except NameError:
+            pass  # display_truncated not defined if not in fanout path
+
         result = html.Div([
             warning,
             html.Div([
-                html.Span(f"{len(display_df):,} rows returned",
+                html.Span(row_count_msg,
                          className="text-muted", style={"fontSize": "11px"}),
                 html.Div([
                     dbc.Button(
