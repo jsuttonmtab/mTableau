@@ -3075,6 +3075,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     ti = next((i for i, item in enumerate(ctx.inputs_list[0])
     if item["id"]["index"] == triggered["index"]), 0)
 
+    ws_key        = triggered["index"]
     rows          = rows_data[ti]          if rows_data          else []
     cols          = cols_data[ti]          if cols_data          else []
     field_filters = field_filters_data[ti] if field_filters_data else {}
@@ -3174,7 +3175,6 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             df = run_extract_query(sql)
             results_dir = get_base_dir() / "data" / "results"
             results_dir.mkdir(parents=True, exist_ok=True)
-            ws_key = triggered["index"]
 
             # ── Apply FIXED formulas BEFORE pivot (raw data has all columns) ──
             if formula_calcs and global_calcs and isinstance(global_calcs, dict):
@@ -3213,7 +3213,6 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             display_truncated = False
 
             if "Count" in df.columns and cols:
-                ws_key = triggered["index"]
                 ws_cfg = (ws_settings or {}).get(ws_key, {})
 
                 # ── Run summary query for correct grand totals ────────────
@@ -3342,7 +3341,10 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     sql_update[triggered["index"]] = sql
 
     print("[Query] ✓ Query complete, closing modal")
-    return ([result if i == ti else dash.no_update for i in range(len(n_clicks))],
+    print(f"[Query Return] ti={ti}, ws_key={ws_key}, triggered_index={triggered['index']}, result_type={type(result).__name__}, n_tabs={len(n_clicks)}, full_row_count={full_row_count}, display_truncated={display_truncated}")
+    result_list = [result if i == ti else dash.no_update for i in range(len(n_clicks))]
+    print(f"[Query Return] result_list has {len([r for r in result_list if r is not dash.no_update])} non-update entries")
+    return (result_list,
             last_run_update if last_run_update != (last_run or {}) else dash.no_update,
             sql_update if sql_update != (ws_last_sql or {}) else dash.no_update,
             False)  # Close the query-running-modal
