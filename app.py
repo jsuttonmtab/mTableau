@@ -3051,6 +3051,7 @@ def _build_cascade_where(field_filters, current_field):
     Output({"type": "data-table-container", "index": ALL}, "children"),
     Output("ws-last-run-state", "data", allow_duplicate=True),
     Output("ws-last-sql", "data", allow_duplicate=True),
+    Output("query-running-modal", "is_open", allow_duplicate=True),
     Input({"type": "run-query-btn",          "index": ALL}, "n_clicks"),
     State({"type": "ws-rows",                "index": ALL}, "data"),
     State({"type": "ws-cols",                "index": ALL}, "data"),
@@ -3340,9 +3341,11 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     sql_update = dict(ws_last_sql or {})
     sql_update[triggered["index"]] = sql
 
+    print("[Query] ✓ Query complete, closing modal")
     return ([result if i == ti else dash.no_update for i in range(len(n_clicks))],
             last_run_update if last_run_update != (last_run or {}) else dash.no_update,
-            sql_update if sql_update != (ws_last_sql or {}) else dash.no_update)
+            sql_update if sql_update != (ws_last_sql or {}) else dash.no_update,
+            False)  # Close the query-running-modal
 
 
 @app.callback(
