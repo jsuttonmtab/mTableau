@@ -3196,11 +3196,13 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                     if ef in df.columns and ef not in rows and ef not in cols:
                         df.drop(columns=[ef], inplace=True)
             # Save results AFTER formulas are applied (so exports match the tab)
+            print(f"[Query] 1. Saving {len(df):,} rows to parquet...")
             try:
                 df.to_parquet(results_dir / f"{ws_key}.parquet", index=False)
                 with open(results_dir / f"{ws_key}.meta.json", "w") as f:
                     json.dump({"rows": rows, "cols": cols,
                                "date_formats": date_formats, "measure": measure}, f)
+                print(f"[Query] ✓ Parquet saved")
             except Exception as e:
                 print(f"Could not save result: {e}")
 
@@ -3238,33 +3240,44 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                                 global_calcs=global_calcs
                                 if isinstance(global_calcs, dict) else {}
                             )
+                            print(f"[Query] 2. Running summary query for fanout deduplication...")
                             df_summary = run_extract_query(summary_sql)
-                            print(f"Summary query returned {len(df_summary)} rows")
+                            print(f"[Query] ✓ Summary query returned {len(df_summary)} rows")
                         except Exception as e:
                             print(f"Summary query error: {e}")
                             df_summary = None
                 # Save summary for restore
                 if df_summary is not None:
                     try:
+                        print(f"[Query] 3. Saving summary to parquet...")
                         df_summary.to_parquet(results_dir / f"{ws_key}.summary.parquet", index=False)
+                        print(f"[Query] ✓ Summary saved")
                     except Exception:
                         pass
 
                 # Truncate for display — full data is in parquet for export
+                print(f"[Query] 4. Truncating {full_row_count:,} rows to {MAX_DISPLAY_ROWS:,} for display...")
                 display_truncated = len(df) > MAX_DISPLAY_ROWS
                 if display_truncated:
                     df = df.iloc[:MAX_DISPLAY_ROWS].copy()
+                    print(f"[Query] ✓ Truncated to {len(df):,} rows for display")
 
+                print(f"[Query] 5. Applying pivot to {len(df):,} rows...")
                 df = apply_pivot(df, rows, cols,
                                  col_total=ws_cfg.get("col_grand_total", "last"),
                                  row_total=ws_cfg.get("row_grand_total", "first"),
                                  df_summary=df_summary)
+                print(f"[Query] ✓ Pivot complete, result: {len(df):,} rows")
         else:
+            print(f"[Query] 1. Running non-DuckDB query...")
             df = run_query(sql, params)
+            print(f"[Query] ✓ Query returned {len(df):,} rows")
             # Truncate for display — no parquet saved in non-DuckDB path
+            print(f"[Query] 2. Truncating to {MAX_DISPLAY_ROWS:,} for display...")
             display_truncated = len(df) > MAX_DISPLAY_ROWS
             if display_truncated:
                 df = df.iloc[:MAX_DISPLAY_ROWS].copy()
+                print(f"[Query] ✓ Truncated to {len(df):,} rows")
 
         # Post-pivot formulas (non-FIXED, e.g. math on Count columns)
         if global_calcs and isinstance(global_calcs, dict):
