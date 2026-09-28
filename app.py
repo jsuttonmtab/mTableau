@@ -3222,7 +3222,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
 
             # Initialize truncation tracking for all DuckDB paths
             full_row_count = len(df)
-            MAX_DISPLAY_ROWS = 1000
+            MAX_DISPLAY_ROWS = 100  # Reduced from 1000 for testing browser payload
             display_truncated = False
 
             if "Count" in df.columns and cols:
@@ -3308,7 +3308,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         col_truncated = False
         row_cols = [c for c in df.columns if c in rows]
         data_cols = [c for c in df.columns if c not in rows]
-        MAX_DISPLAY_COLS = 20
+        MAX_DISPLAY_COLS = 10  # Reduced from 20 for testing browser payload
         if len(data_cols) > MAX_DISPLAY_COLS:
             keep_cols = row_cols + data_cols[:MAX_DISPLAY_COLS]
             # Keep Grand Total if present
@@ -3319,6 +3319,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             print(f"[Query] Truncated {len(data_cols):,} data columns to {MAX_DISPLAY_COLS}")
 
         display_df = apply_row_blanking(df, rows)
+        print(f"[Query] HTML payload: {len(df)} rows × {len(df.columns)} cols = {len(df) * len(df.columns)} cells")
         table      = build_html_table(df, display_df=display_df, rows=rows)
         _save_ws_state(triggered["index"], rows, cols, filters,
                        field_filters, date_formats, measure)
