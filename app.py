@@ -3518,7 +3518,9 @@ def restore_saved_results(worksheets):
 )
 def export_data(n_clicks, rows_data, cols_data, field_filters_data,
                 date_formats_data, measure_data, global_calcs, ws_settings, active_tab):
-    if not any(n for n in n_clicks if n):
+    # Check that an actual click happened, not just a new button appearing in the DOM
+    triggered = ctx.triggered
+    if not triggered or all(t.get("value") is None or t.get("value") == 0 for t in triggered):
         raise dash.exceptions.PreventUpdate
     triggered = ctx.triggered_id
     ti = next((i for i, item in enumerate(ctx.inputs_list[0])
@@ -3654,9 +3656,11 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
 )
 def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
                     date_formats_data, measure_data, global_calcs, ws_settings, active_tab):
-    print(f"[Crosstab Export] triggered, n_clicks={n_clicks}")
-    if not any(n for n in n_clicks if n):
+    # Check that an actual click happened, not just a new button appearing in the DOM
+    triggered = ctx.triggered
+    if not triggered or all(t.get("value") is None or t.get("value") == 0 for t in triggered):
         raise dash.exceptions.PreventUpdate
+    print(f"[Crosstab Export] triggered, n_clicks={n_clicks}")
     triggered = ctx.triggered_id
     if triggered is None:
         raise dash.exceptions.PreventUpdate
