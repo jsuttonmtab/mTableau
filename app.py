@@ -3384,21 +3384,19 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     Output({"type": "data-table-container", "index": ALL}, "children",
            allow_duplicate=True),
     Output("ws-last-run-state", "data", allow_duplicate=True),
-    Input("worksheet-content", "children"),
-    prevent_initial_call='initial_duplicate'
+    Input("worksheet-store", "data"),
+    prevent_initial_call=False
 )
-def restore_saved_results(children):
-    if not children:
-        raise dash.exceptions.PreventUpdate
-    cfg = load_config()
-    worksheets = cfg.get("worksheets", [])
+def restore_saved_results(worksheets):
     if not worksheets:
         raise dash.exceptions.PreventUpdate
+    print(f"[Restore] Triggered by worksheet-store change, restoring saved results for {len(worksheets)} worksheets")
+    cfg = load_config()
     ws_settings  = cfg.get("ws_settings", {})
     ws_state_all = cfg.get("ws_state", {})
     results      = []
     last_run_out = {}
-    print(f"[Restore Debug] Worksheets in config order: {worksheets}")
+    print(f"[Restore Debug] Worksheets in order: {worksheets}")
     for w in worksheets:
         ws_key       = w.replace(" ", "_")
         results_dir  = get_base_dir() / "data" / "results"
