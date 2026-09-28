@@ -1585,8 +1585,15 @@ def render_all_worksheets(worksheets, active_tab):
         worksheets = ["Worksheet 1"]
     if not active_tab or active_tab not in worksheets:
         active_tab = worksheets[0]
-    return [build_ws_wrapper(w, display="block" if w == active_tab else "none")
-            for w in worksheets]
+
+    print(f"[Render Worksheets] Creating ws-wrapper elements in order:")
+    result = []
+    for i, w in enumerate(worksheets):
+        ws_key = w.replace(" ", "_")
+        visible = "block" if w == active_tab else "none"
+        print(f"[Render Worksheets] {i}: {w} (ws_key={ws_key}, display={visible})")
+        result.append(build_ws_wrapper(w, display=visible))
+    return result
 
 
 @app.callback(
@@ -1681,10 +1688,28 @@ def restore_ws_settings(worksheets):
 def show_active_worksheet(active_tab, worksheets, current_children):
     if not worksheets:
         worksheets = ["Worksheet 1"]
-    styles = [{"height": "100%", "display": "block" if w == active_tab else "none"}
-              for w in worksheets]
 
-    print(f"[Tab Switch] Switching to tab: {active_tab}")
+    print(f"[Tab Switch] active_tab={active_tab}")
+    print(f"[Tab Switch] worksheets={worksheets}")
+    print(f"[Tab Switch] current_children count={len(current_children) if current_children else 0}")
+
+    # Debug: Get the actual pattern-matched indices for ws-wrapper from context
+    # The order Dash uses might differ from worksheet order
+    if hasattr(ctx, 'outputs_list'):
+        wrapper_indices = []
+        for outputs in ctx.outputs_list:
+            for output in outputs:
+                if isinstance(output.get('id'), dict) and output['id'].get('type') == 'ws-wrapper':
+                    wrapper_indices.append(output['id'].get('index'))
+        if wrapper_indices:
+            print(f"[Tab Switch] ws-wrapper indices in DOM order: {wrapper_indices}")
+
+    styles = []
+    for i, w in enumerate(worksheets):
+        visible = "block" if w == active_tab else "none"
+        styles.append({"height": "100%", "display": visible})
+        print(f"[Tab Switch] {i}: {w} -> {visible}")
+
     # IMPORTANT: Do NOT load or process any data on tab switch.
     # Just change display styles. Data was already loaded by restore_saved_results on startup.
     # If user needs to load saved results, they'll click Run Query.
