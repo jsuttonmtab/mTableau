@@ -3654,6 +3654,7 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
 )
 def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
                     date_formats_data, measure_data, global_calcs, ws_settings, active_tab):
+    print(f"[Crosstab Export] triggered, n_clicks={n_clicks}")
     if not any(n for n in n_clicks if n):
         raise dash.exceptions.PreventUpdate
     triggered = ctx.triggered_id
