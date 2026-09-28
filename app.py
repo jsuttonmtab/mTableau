@@ -3569,6 +3569,14 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
 
         if parquet_path.exists():
             df = pd.read_parquet(parquet_path)
+            # Skip pivot for large datasets — export raw grouped data as-is
+            if len(df) > 5000:
+                print(f"[Export] Skipping pivot for {len(df):,} rows, exporting raw data")
+                import io
+                output = io.BytesIO()
+                df.to_excel(output, index=False)
+                output.seek(0)
+                return dcc.send_bytes(output.getvalue(), filename=f"{ws_key}.xlsx")
         else:
             query_date_formats = {}
             for f in all_fields:
@@ -3699,6 +3707,14 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
 
         if parquet_path.exists():
             df = pd.read_parquet(parquet_path)
+            # Skip pivot for large datasets — export raw grouped data as-is
+            if len(df) > 5000:
+                print(f"[Export Crosstab] Skipping pivot for {len(df):,} rows, exporting raw data")
+                import io
+                output = io.BytesIO()
+                df.to_excel(output, index=False)
+                output.seek(0)
+                return dcc.send_bytes(output.getvalue(), filename=f"{ws_key}_crosstab.xlsx")
         else:
             query_date_formats = {}
             for f in all_fields:
