@@ -1683,43 +1683,17 @@ def show_active_worksheet(active_tab, worksheets, current_children):
     styles = [{"height": "100%", "display": "block" if w == active_tab else "none"}
               for w in worksheets]
 
-    # Check if the active tab needs lazy loading
-    table_results = [dash.no_update] * len(worksheets)
-    active_key = active_tab.replace(" ", "_")
-    print(f"[Tab Switch] active_tab={active_tab}, active_key={active_key}")
-    print(f"[Tab Switch Debug] Worksheets in order: {[w.replace(' ', '_') for w in worksheets]}")
-    print(f"[Tab Switch Debug] current_children count: {len(current_children) if current_children else 0}")
-
-    for i, w in enumerate(worksheets):
-        ws_key = w.replace(" ", "_")
-        if ws_key != active_key:
-            continue
-        # Check if current content is a lazy-load placeholder
-        child = current_children[i] if current_children and i < len(current_children) else None
-        print(f"[Tab Switch Debug] Checking worksheet {i}: {ws_key}, child exists: {child is not None}")
-        if child is None:
-            continue
-        # Detect placeholder by checking if it's a dict with lazy-load-pending type
-        is_pending = False
-        try:
-            if isinstance(child, dict):
-                props = child.get("props", {})
-                child_id = props.get("id", {})
-                if isinstance(child_id, dict) and child_id.get("type") == "lazy-load-pending":
-                    is_pending = True
-        except Exception:
-            pass
-
-        if is_pending:
-            # Build the table now
-            table_results[i] = _build_saved_result(ws_key)
-
-    return styles, table_results
+    print(f"[Tab Switch] Switching to tab: {active_tab}")
+    # IMPORTANT: Do NOT load or process any data on tab switch.
+    # Just change display styles. Data was already loaded by restore_saved_results on startup.
+    # If user needs to load saved results, they'll click Run Query.
+    return styles, [dash.no_update] * len(worksheets)
 
 def _build_saved_result(ws_key):
-    """Build the HTML table for a single saved worksheet result."""
+    """Build the HTML table for a single saved worksheet result. Skip large results."""
     cfg = load_config()
     ws_settings  = cfg.get("ws_settings", {})
+    ws_state_all = cfg.get("ws_state", {})
     results_dir  = get_base_dir() / "data" / "results"
     parquet_path = results_dir / f"{ws_key}.parquet"
     meta_path    = results_dir / f"{ws_key}.meta.json"
@@ -1731,6 +1705,25 @@ def _build_saved_result(ws_key):
     try:
         df = pd.read_parquet(parquet_path)
         print(f"[Lazy Load] Loaded {len(df):,} rows from {ws_key}.parquet")
+
+        # Skip large results — user should click Run Query for 1000+ rows
+        if len(df) > 1000:
+            print(f"[Lazy Load] Skipping {len(df):,} rows — too large to auto-load")
+            ws_state = ws_state_all.get(ws_key, {})
+            return html.Div([
+                html.Div([
+                    html.I(className="bi bi-table",
+                           style={"fontSize": "24px", "marginBottom": "8px",
+                                  "color": "#6c757d"}),
+                    html.Div(f"{len(df):,} rows — too large to auto-load.",
+                             style={"fontSize": "13px", "fontWeight": "bold",
+                                    "color": "#555"}),
+                    html.Div("Click Run Query to load results.",
+                             style={"fontSize": "11px", "color": "#888",
+                                    "marginTop": "4px"}),
+                ], style={"textAlign": "center", "padding": "60px 30px"})
+            ])
+
         with open(meta_path) as f:
             meta = json.load(f)
         rows = meta.get("rows", [])
