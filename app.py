@@ -3284,6 +3284,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         else:
             print(f"[Query] 1. Running non-DuckDB query...")
             df = run_query(sql, params)
+            full_row_count = len(df)
             print(f"[Query] ✓ Query returned {len(df):,} rows")
             # Truncate for display — no parquet saved in non-DuckDB path
             print(f"[Query] 2. Truncating to {MAX_DISPLAY_ROWS:,} for display...")
@@ -3303,18 +3304,34 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                             except Exception as e:
                                 print(f"Post-pivot calc error {calc_name}: {e}")
 
+        # Truncate columns for display if too wide
+        col_truncated = False
+        row_cols = [c for c in df.columns if c in rows]
+        data_cols = [c for c in df.columns if c not in rows]
+        MAX_DISPLAY_COLS = 20
+        if len(data_cols) > MAX_DISPLAY_COLS:
+            keep_cols = row_cols + data_cols[:MAX_DISPLAY_COLS]
+            # Keep Grand Total if present
+            if "Grand Total" in df.columns and "Grand Total" not in keep_cols:
+                keep_cols.append("Grand Total")
+            df = df[keep_cols]
+            col_truncated = True
+            print(f"[Query] Truncated {len(data_cols):,} data columns to {MAX_DISPLAY_COLS}")
+
         display_df = apply_row_blanking(df, rows)
         table      = build_html_table(df, display_df=display_df, rows=rows)
         _save_ws_state(triggered["index"], rows, cols, filters,
                        field_filters, date_formats, measure)
 
         # Build row count message with truncation notice if applicable
-        row_count_msg = f"{len(display_df):,} rows returned"
-        try:
-            if display_truncated:
-                row_count_msg += " — showing first 1,000. Export for full data."
-        except NameError:
-            pass  # display_truncated not defined if not in fanout path
+        msg = f"{full_row_count:,} rows returned"
+        if display_truncated:
+            msg += " — showing first 1,000 rows"
+        if col_truncated:
+            msg += f" — showing first {MAX_DISPLAY_COLS} date columns"
+        if display_truncated or col_truncated:
+            msg += ". Export for full data."
+        row_count_msg = msg
 
         result = html.Div([
             warning,
