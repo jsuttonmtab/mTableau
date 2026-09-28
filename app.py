@@ -1686,13 +1686,17 @@ def show_active_worksheet(active_tab, worksheets, current_children):
     # Check if the active tab needs lazy loading
     table_results = [dash.no_update] * len(worksheets)
     active_key = active_tab.replace(" ", "_")
+    print(f"[Tab Switch] active_tab={active_tab}, active_key={active_key}")
+    print(f"[Tab Switch Debug] Worksheets in order: {[w.replace(' ', '_') for w in worksheets]}")
+    print(f"[Tab Switch Debug] current_children count: {len(current_children) if current_children else 0}")
 
     for i, w in enumerate(worksheets):
         ws_key = w.replace(" ", "_")
         if ws_key != active_key:
             continue
         # Check if current content is a lazy-load placeholder
-        child = current_children[i] if i < len(current_children) else None
+        child = current_children[i] if current_children and i < len(current_children) else None
+        print(f"[Tab Switch Debug] Checking worksheet {i}: {ws_key}, child exists: {child is not None}")
         if child is None:
             continue
         # Detect placeholder by checking if it's a dict with lazy-load-pending type
@@ -1719,12 +1723,14 @@ def _build_saved_result(ws_key):
     results_dir  = get_base_dir() / "data" / "results"
     parquet_path = results_dir / f"{ws_key}.parquet"
     meta_path    = results_dir / f"{ws_key}.meta.json"
+    print(f"[Lazy Load] ws_key={ws_key}, parquet_path={parquet_path}, exists={parquet_path.exists()}")
 
     if not parquet_path.exists() or not meta_path.exists():
         return dash.no_update
 
     try:
         df = pd.read_parquet(parquet_path)
+        print(f"[Lazy Load] Loaded {len(df):,} rows from {ws_key}.parquet")
         with open(meta_path) as f:
             meta = json.load(f)
         rows = meta.get("rows", [])
@@ -3077,6 +3083,11 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     ti = next((i for i, item in enumerate(ctx.inputs_list[0])
     if item["id"]["index"] == triggered["index"]), 0)
 
+    # Debug: Print the order of all run-query-btn indices
+    btn_indices = [item["id"]["index"] for item in ctx.inputs_list[0]]
+    print(f"[Query Debug] Pattern-matched button indices in order: {btn_indices}")
+    print(f"[Query Debug] Triggered button: {triggered['index']}, found at position ti={ti}")
+
     ws_key        = triggered["index"]
     rows          = rows_data[ti]          if rows_data          else []
     cols          = cols_data[ti]          if cols_data          else []
@@ -3370,16 +3381,19 @@ def restore_saved_results(children):
     ws_state_all = cfg.get("ws_state", {})
     results      = []
     last_run_out = {}
+    print(f"[Restore Debug] Worksheets in config order: {worksheets}")
     for w in worksheets:
         ws_key       = w.replace(" ", "_")
         results_dir  = get_base_dir() / "data" / "results"
         parquet_path = results_dir / f"{ws_key}.parquet"
         meta_path    = results_dir / f"{ws_key}.meta.json"
         if not parquet_path.exists() or not meta_path.exists():
+            print(f"[Restore] ws_key={ws_key}, parquet exists=False")
             results.append(dash.no_update)
             continue
         try:
             df = pd.read_parquet(parquet_path)
+            print(f"[Restore] ws_key={ws_key}, parquet exists=True, rows={len(df):,}")
             with open(meta_path) as f:
                 meta = json.load(f)
             rows = meta.get("rows", [])
@@ -3461,6 +3475,18 @@ def restore_saved_results(children):
         except Exception as e:
             print(f"Could not restore {ws_key}: {e}")
             results.append(dash.no_update)
+
+    # Debug: Print the results list to see the order
+    result_types = []
+    for i, r in enumerate(results):
+        if r is dash.no_update:
+            result_types.append(f"{i}:no_update")
+        elif isinstance(r, html.Div):
+            # Try to extract the worksheet key from the result
+            result_types.append(f"{i}:Div")
+        else:
+            result_types.append(f"{i}:{type(r).__name__}")
+    print(f"[Restore Debug] Returning results list: {result_types}")
     return results, last_run_out
 
 
