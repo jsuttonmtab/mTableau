@@ -3385,7 +3385,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
            allow_duplicate=True),
     Output("ws-last-run-state", "data", allow_duplicate=True),
     Input("worksheet-store", "data"),
-    prevent_initial_call=False
+    prevent_initial_call='initial_duplicate'
 )
 def restore_saved_results(worksheets):
     if not worksheets:
