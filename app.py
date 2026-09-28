@@ -708,6 +708,7 @@ _initial_worksheets = load_config().get("worksheets", ["Worksheet 1"])
 app.layout = html.Div([
     dcc.Store(id="worksheet-store",        data=_initial_worksheets, storage_type="memory"),
     dcc.Store(id="global-calculations",    data=load_config().get("global_calculations", {})),
+    dcc.Store(id="restore-complete",       data=False),
     dcc.Store(id="extract-running",        data=False),
     dcc.Store(id="rename-worksheet-input", data=""),
     dcc.Store(id="drop-payload",           data=""),
@@ -3378,14 +3379,26 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     Output({"type": "data-table-container", "index": ALL}, "children",
            allow_duplicate=True),
     Output("ws-last-run-state", "data", allow_duplicate=True),
-    Input("worksheet-store", "data"),
+    Output("restore-complete", "data"),
+    Input("worksheet-content", "children"),
+    State("restore-complete", "data"),
     prevent_initial_call='initial_duplicate'
 )
-def restore_saved_results(worksheets):
+def restore_saved_results(children, restore_complete):
+    # Only restore on initial page load, not after query updates
+    if restore_complete:
+        print(f"[Restore] Already complete, skipping")
+        raise dash.exceptions.PreventUpdate
+
+    if not children:
+        raise dash.exceptions.PreventUpdate
+
+    cfg = load_config()
+    worksheets = cfg.get("worksheets", [])
     if not worksheets:
         raise dash.exceptions.PreventUpdate
-    print(f"[Restore] Triggered by worksheet-store change, restoring saved results for {len(worksheets)} worksheets")
-    cfg = load_config()
+
+    print(f"[Restore] Initial restore: restoring saved results for {len(worksheets)} worksheets")
     ws_settings  = cfg.get("ws_settings", {})
     ws_state_all = cfg.get("ws_state", {})
     results      = []
@@ -3496,7 +3509,8 @@ def restore_saved_results(worksheets):
         else:
             result_types.append(f"{i}:{type(r).__name__}")
     print(f"[Restore Debug] Returning results list: {result_types}")
-    return results, last_run_out
+    print(f"[Restore] ✓ Initial restore complete, will not run again")
+    return results, last_run_out, True
 
 
 # ─────────────────────────────────────────────
