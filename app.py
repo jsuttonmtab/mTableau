@@ -185,6 +185,7 @@ def _get_filter_options_for_field(field, fmt="none"):
 
     try:
         con = duckdb.connect()
+        con.execute("SET memory_limit='1GB'")
         # High cardinality fields — don't load all, require search
         if field in HIGH_CARDINALITY_FIELDS:
             count_result = con.execute(
@@ -2802,6 +2803,7 @@ def execute_hc_search(search_lower, context_input, sort_order, cascade, field_fi
         search_like = f'%{search_lower}%'
     try:
         con = duckdb.connect()
+        con.execute("SET memory_limit='1GB'")
         sql = f"""SELECT DISTINCT
                       {field} as val,
                       {field} as label,

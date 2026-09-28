@@ -66,6 +66,7 @@ def get_extract_info():
             )
             try:
                 con  = duckdb.connect()
+                con.execute("SET memory_limit='1GB'")
                 rows = con.execute(
                     f"SELECT COUNT(*) FROM read_parquet('{str(EXTRACT_PATH)}')"
                 ).fetchone()[0]
@@ -101,6 +102,7 @@ def get_extract_info():
 
     try:
         con        = duckdb.connect()
+        con.execute("SET memory_limit='1GB'")
         usage_rows = con.execute(
             f"SELECT COUNT(*) FROM read_parquet('{str(USAGE_PATH)}')"
         ).fetchone()[0]
@@ -246,7 +248,7 @@ def build_extract(progress_callback=None):
             progress_callback(f"Step 2/5: Initialising DuckDB... ({elapsed()})", 8)
 
         con = duckdb.connect(str(temp_dir / "work.duckdb"))
-        con.execute("SET memory_limit='4GB'")
+        con.execute("SET memory_limit='2GB'")  # Reduced from 4GB for 7GB system
         con.execute("SET threads=4")
 
         # Setup MySQL extension for large table extraction (avoids timeouts)
@@ -564,6 +566,7 @@ def build_extract(progress_callback=None):
 
         # ── Report final sizes ────────────────────────────────────────────────
         con2        = duckdb.connect()
+        con2.execute("SET memory_limit='1GB'")
         usage_rows  = con2.execute(
             f"SELECT COUNT(*) FROM read_parquet('{str(USAGE_PATH)}')"
         ).fetchone()[0]

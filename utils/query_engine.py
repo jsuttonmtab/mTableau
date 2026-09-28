@@ -211,6 +211,7 @@ def _build_from_clause(need_user_group, need_study, need_qmnem):
 
 def run_extract_query(sql):
     con    = duckdb.connect()
+    con.execute("SET memory_limit='1GB'")
     result = con.execute(sql).fetchdf()
     con.close()
     return result
