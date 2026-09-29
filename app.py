@@ -4427,7 +4427,7 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
 
 @app.callback(
     Output("login-error", "children"),
-    Output("url", "pathname"),
+    Output("url", "pathname", allow_duplicate=True),
     Input("login-btn", "n_clicks"),
     State("login-email", "value"),
     State("login-password", "value"),
