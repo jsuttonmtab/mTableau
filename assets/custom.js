@@ -64,11 +64,15 @@ setTimeout(function() {
             e.preventDefault(); e.stopPropagation(); hideTabMenu();
             targetTab = tab;
             menu.style.display = 'block';
-            // Hide "Sharing" option for tabs with data-shared="1" (received worksheets)
+            // For received tabs (data-shared="1"), hide Sharing, Rename, Settings
+            const isShared = tab.hasAttribute('data-shared');
             const ctxShareCopy = document.getElementById('ctx-share-copy');
-            if (ctxShareCopy) {
-                ctxShareCopy.style.display = tab.hasAttribute('data-shared') ? 'none' : 'flex';
-            }
+            const ctxRename = document.getElementById('ctx-rename');
+            const ctxSettings = document.getElementById('ctx-settings');
+
+            if (ctxShareCopy) ctxShareCopy.style.display = isShared ? 'none' : 'flex';
+            if (ctxRename) ctxRename.style.display = isShared ? 'none' : 'flex';
+            if (ctxSettings) ctxSettings.style.display = isShared ? 'none' : 'flex';
             const height = menu.offsetHeight;
             const width = menu.offsetWidth;
             let x = Math.min(e.clientX, window.innerWidth - width);

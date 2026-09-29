@@ -164,19 +164,19 @@ def merge_inbox_to_config(user_email, user_config):
             user_config["worksheets"] = []
         user_config["worksheets"].append(ws_name)
 
-        # Add worksheet state (deep copy for complete independence)
+        # Store only shared_from metadata - worksheet definition loads live from owner
         if "ws_state" not in user_config:
             user_config["ws_state"] = {}
         ws_key = ws_name.replace(" ", "_")
-        user_config["ws_state"][ws_key] = copy.deepcopy(shared_ws["worksheet_state"])
 
-        # Mark with shared_from for tracking
-        if share_id:
-            user_config["ws_state"][ws_key]["shared_from"] = {
+        # Received tabs are live references, not copies
+        user_config["ws_state"][ws_key] = {
+            "shared_from": {
                 "share_id": share_id,
                 "owner_email": shared_ws.get("from_email"),
                 "source_worksheet": shared_ws.get("source_worksheet", shared_ws["worksheet_name"])
             }
+        }
 
         # Merge calculations with collision handling
         if "global_calculations" not in user_config:

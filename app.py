@@ -151,6 +151,37 @@ def _get_fmt(date_formats, shelf, field):
     return date_formats.get(_fmt_key(shelf, field),
            date_formats.get(field, "none"))
 
+def _is_readonly_ws(ws_name, user_email=None):
+    """Check if a worksheet is read-only (received/shared)."""
+    user_email = user_email or _user_email()
+    if not user_email:
+        return False
+    cfg = load_config(user_email=user_email)
+    ws_key = ws_name.replace(" ", "_")
+    ws_state = cfg.get("ws_state", {}).get(ws_key, {})
+    return bool(ws_state.get("shared_from"))
+
+def _get_ws_shared_from(ws_name, user_email=None):
+    """Get shared_from metadata if worksheet is received."""
+    user_email = user_email or _user_email()
+    if not user_email:
+        return None
+    cfg = load_config(user_email=user_email)
+    ws_key = ws_name.replace(" ", "_")
+    return cfg.get("ws_state", {}).get(ws_key, {}).get("shared_from")
+
+def _load_owner_ws_state(shared_from):
+    """Load worksheet state from owner (live reference)."""
+    if not shared_from:
+        return None
+    owner_email = shared_from.get("owner_email")
+    source_name = shared_from.get("source_worksheet")
+    if not owner_email or not source_name:
+        return None
+    owner_cfg = load_config(user_email=owner_email)
+    ws_key = source_name.replace(" ", "_")
+    return owner_cfg.get("ws_state", {}).get(ws_key)
+
 
 # ─────────────────────────────────────────────
 # Config helpers
@@ -820,6 +851,19 @@ def _get_layout():
         save_config(config, user_email=user_email)
         clear_inbox(user_email)
 
+    # Migration: clean up stale worksheet state in received tabs (keep only shared_from)
+    if IS_WEB and user_email:
+        ws_state = config.get("ws_state", {})
+        migrated = False
+        for ws_key, state in list(ws_state.items()):
+            if state.get("shared_from") and len(state) > 1:
+                # Keep only shared_from for received tabs
+                ws_state[ws_key] = {"shared_from": state["shared_from"]}
+                migrated = True
+        if migrated:
+            config["ws_state"] = ws_state
+            save_config(config, user_email=user_email)
+
     current_worksheets = config.get("worksheets", ["Worksheet 1"])
 
     # Get merged calculations (personal + shared)
@@ -1151,6 +1195,15 @@ def _get_layout():
                       color="danger", size="sm"),
         ], style={"padding": "8px 16px"}),
     ], id="delete-ws-confirm-modal", is_open=False, centered=True, size="sm"),
+
+    dbc.Modal([
+        dbc.ModalHeader("Read-Only Tab"),
+        dbc.ModalBody("This tab is shared with you and is read-only. To make changes, duplicate it and edit the copy."),
+        dbc.ModalFooter([
+            dbc.Button("Duplicate now", id="ws-readonly-duplicate-btn", color="primary", size="sm"),
+            dbc.Button("Close", id="ws-readonly-close-btn", color="secondary", size="sm"),
+        ]),
+    ], id="ws-readonly-modal", is_open=False, centered=True, size="sm"),
 
     dbc.Modal([
         dbc.ModalHeader(id="ws-settings-header"),
@@ -1667,6 +1720,11 @@ def save_ws_settings(n_clicks, payload, col_total, row_total,
                      ws_settings, worksheets, active_tab):
     if not n_clicks or not payload:
         raise dash.exceptions.PreventUpdate
+
+    # Read-only guard
+    if _is_readonly_ws(payload):
+        return dash.no_update
+
     ws_key   = payload.replace(" ", "_")
     settings = dict(ws_settings or {})
     settings[ws_key] = {"col_grand_total": col_total, "row_grand_total": row_total}
@@ -1795,14 +1853,14 @@ def restore_tabs(worksheets, current_value):
             from utils.auth import get_user
             owner = get_user(owner_email)
             owner_name = owner.name if owner else owner_email.split("@")[0]
+
+            # Use Bootstrap people-fill icon with tooltip
             label = html.Div([
-                w,
-                html.Span(
-                    " 🔗",
-                    title=f"Shared by {owner_name}",
-                    style={"marginLeft": "4px", "fontSize": "12px", "opacity": "0.8"}
-                )
-            ])
+                html.I(className="bi bi-people-fill",
+                       title=f"Shared by {owner_name} (read-only)",
+                       style={"fontSize": "12px", "marginRight": "4px", "opacity": "0.7"}),
+                w
+            ], style={"display": "flex", "alignItems": "center", "gap": "4px"})
             tabs.append(dcc.Tab(label=label, value=w, **{"data-shared": "1"}))
         else:
             label = w
@@ -1825,13 +1883,21 @@ def restore_tabs(worksheets, current_value):
 def restore_ws_state(worksheets):
     if not worksheets:
         worksheets = ["Worksheet 1"]
-    cfg      = load_config()
+    user_email = _user_email()
+    cfg      = load_config(user_email=user_email)
     ws_state = cfg.get("ws_state", {})
     rows_out, cols_out, filters_out = [], [], []
     field_filters_out, date_formats_out, measure_out = [], [], []
     for w in worksheets:
         ws_key        = w.replace(" ", "_")
         state         = ws_state.get(ws_key, {})
+
+        # Load live owner state for received tabs
+        shared_from = state.get("shared_from")
+        if shared_from:
+            owner_state = _load_owner_ws_state(shared_from)
+            if owner_state:
+                state = owner_state  # Use owner's state, not recipient's empty state
         field_filters = state.get("field_filters", {})
         # Strip \r from any saved filter values
         field_filters = {
@@ -2074,6 +2140,87 @@ def manage_worksheets(confirm_clicks, rename_value, new_name, worksheets, active
 )
 def show_delete_btn(active_tab, worksheets):
     return {"display": "none"}
+
+
+# ─────────────────────────────────────────────
+# Read-only modal handlers
+# ─────────────────────────────────────────────
+
+@app.callback(
+    Output("ws-readonly-modal", "is_open"),
+    Input("ws-readonly-close-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def close_readonly_modal(n_clicks):
+    return False
+
+
+@app.callback(
+    Output("worksheet-store", "data", allow_duplicate=True),
+    Output("worksheet-tabs", "value", allow_duplicate=True),
+    Output("ws-readonly-modal", "is_open", allow_duplicate=True),
+    Input("ws-readonly-duplicate-btn", "n_clicks"),
+    State("worksheet-tabs", "value"),
+    State("worksheet-store", "data"),
+    prevent_initial_call=True
+)
+def duplicate_from_readonly(n_clicks, active_tab, worksheets):
+    """Duplicate a received/readonly tab into an independent editable copy."""
+    if not n_clicks or not active_tab:
+        raise dash.exceptions.PreventUpdate
+
+    user_email = _user_email()
+    if not user_email:
+        return dash.no_update, dash.no_update, False
+
+    # Load owner's state for this received tab
+    shared_from = _get_ws_shared_from(active_tab, user_email)
+    if not shared_from:
+        return dash.no_update, dash.no_update, False
+
+    owner_state = _load_owner_ws_state(shared_from)
+    if not owner_state:
+        return dash.no_update, dash.no_update, False
+
+    # Create independent copy with new name
+    base = f"{active_tab} (copy)"
+    new_name = base
+    counter = 2
+    while new_name in (worksheets or []):
+        counter += 1
+        new_name = f"{active_tab} (copy {counter})"
+
+    # Add to worksheets
+    updated = list(worksheets or []) + [new_name]
+
+    # Copy owner's state without shared_from
+    import copy
+    cfg = load_config(user_email=user_email)
+    if "ws_state" not in cfg:
+        cfg["ws_state"] = {}
+    new_ws_key = new_name.replace(" ", "_")
+    cfg["ws_state"][new_ws_key] = copy.deepcopy(owner_state)
+    cfg["ws_state"][new_ws_key].pop("shared_from", None)  # Make it independent
+
+    # Copy owner's referenced personal calcs into recipient's personal calcs
+    # (with collision handling)
+    owner_email = shared_from.get("owner_email")
+    if owner_email:
+        owner_cfg = load_config(user_email=owner_email)
+        owner_calcs = owner_cfg.get("global_calculations", {})
+
+        if "global_calculations" not in cfg:
+            cfg["global_calculations"] = {}
+        recipient_calcs = cfg["global_calculations"]
+
+        for calc_name, calc_def in owner_calcs.items():
+            if calc_name not in recipient_calcs:
+                recipient_calcs[calc_name] = calc_def
+
+    save_config(cfg, user_email=user_email)
+    _save_worksheets(updated, user_email=user_email)
+
+    return updated, new_name, False
 
 
 # ─────────────────────────────────────────────
