@@ -838,6 +838,7 @@ def _get_layout():
     dcc.Store(id="delete-ws-pending", data=""),
     dcc.Store(id="ws-last-sql",            data={}, storage_type="memory"),
     dcc.Store(id="sql-display-payload",    data=""),
+    dcc.Store(id="share-ws-payload",       data=""),
     dcc.Download(id="download-data"),
     dcc.Download(id="download-crosstab"),
 
@@ -1095,6 +1096,19 @@ def _get_layout():
         dbc.ModalHeader("Users"),
         dbc.ModalBody(id="users-modal-body", style={"padding": "0"}),
     ], id="users-modal", is_open=False, size="lg") if IS_WEB and current_user.is_admin else None),
+
+    (dbc.Modal([
+        dbc.ModalHeader("Share Worksheet Copy"),
+        dbc.ModalBody([
+            html.Div("Select users to share this worksheet copy with:", className="mb-3"),
+            dbc.Checklist(id="share-ws-users", className="mb-3"),
+            html.Div(id="share-ws-status", style={"fontSize": "12px", "marginBottom": "12px"}),
+        ]),
+        dbc.ModalFooter([
+            dbc.Button("Cancel", id="share-ws-cancel-btn", color="secondary", className="me-2"),
+            dbc.Button("Share", id="share-ws-btn", color="primary"),
+        ]),
+    ], id="share-ws-modal", is_open=False, size="md") if IS_WEB else None),
 
     dbc.Modal([
         dbc.ModalBody([
@@ -1397,6 +1411,13 @@ app.clientside_callback(
     "function(n) { return window._dashShowSqlPayload || ''; }",
     Output("sql-display-payload", "data"),
     Input("show-sql-trigger-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+
+app.clientside_callback(
+    "function(n) { return window._dashShareWsPayload || ''; }",
+    Output("share-ws-payload", "data"),
+    Input("share-ws-trigger-btn", "n_clicks"),
     prevent_initial_call=True
 )
 
@@ -4637,6 +4658,98 @@ def display_sharing_alerts(alerts):
         for alert in alerts
     ])
     return alert_text, True
+
+
+# ─────────────────────────────────────────────
+# Tab sharing
+# ─────────────────────────────────────────────
+
+@app.callback(
+    Output("share-ws-modal", "is_open"),
+    Output("share-ws-users", "options"),
+    Input("share-ws-payload", "data"),
+    Input("share-ws-cancel-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def open_share_modal(payload, cancel_clicks):
+    triggered = ctx.triggered_id
+
+    if triggered == "share-ws-cancel-btn":
+        return False, []
+
+    if not payload or payload == "":
+        raise dash.exceptions.PreventUpdate
+
+    from utils.auth import list_users
+    users = list_users()
+    current_email = current_user.email if IS_WEB and current_user.is_authenticated else None
+
+    options = [
+        {"label": f"{u['name']} ({u['email']})", "value": u['email']}
+        for u in users
+        if u['email'] != current_email
+    ]
+
+    return True, options
+
+
+@app.callback(
+    Output("share-ws-status", "children"),
+    Output("share-ws-modal", "is_open", allow_duplicate=True),
+    Input("share-ws-btn", "n_clicks"),
+    State("share-ws-payload", "data"),
+    State("share-ws-users", "value"),
+    State("worksheet-store", "data"),
+    State("global-calculations", "data"),
+    prevent_initial_call=True
+)
+def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs):
+    if not ws_name or not selected_users or not worksheets:
+        return "No users selected", dash.no_update
+
+    from utils.sharing import add_to_inbox
+    import uuid
+
+    user_email = _user_email()
+    if not user_email:
+        return "Error: not authenticated", dash.no_update
+
+    cfg = load_config(user_email=user_email)
+    ws_key = ws_name.replace(" ", "_")
+    ws_state = cfg.get("ws_state", {}).get(ws_key, {})
+
+    if not ws_state:
+        return f"Error: worksheet '{ws_name}' not found", dash.no_update
+
+    # Collect referenced calcs
+    referenced_calcs = {}
+    for key in ["rows", "cols", "filters", "field_filters"]:
+        if key in ws_state and isinstance(ws_state[key], str):
+            import re
+            for match in re.finditer(r'calc_(\w+)', str(ws_state[key])):
+                calc_name = match.group(1)
+                if calc_name in calcs:
+                    referenced_calcs[calc_name] = calcs[calc_name]
+
+    # Share with selected users
+    shared_count = 0
+    for recipient_email in selected_users:
+        try:
+            add_to_inbox(
+                recipient_email,
+                str(uuid.uuid4()),
+                user_email,
+                current_user.name if IS_WEB else "User",
+                ws_name,
+                ws_state,
+                referenced_calcs
+            )
+            shared_count += 1
+        except Exception as e:
+            print(f"Error sharing with {recipient_email}: {e}")
+
+    status_msg = f"✅ Shared with {shared_count} user(s)" if shared_count > 0 else "❌ No users shared"
+    return status_msg, False
 
 
 if __name__ == "__main__":
