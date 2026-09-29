@@ -842,6 +842,7 @@ def _get_layout():
     dcc.Download(id="download-crosstab"),
 
     html.Button(id="rename-trigger-btn",        style={"display": "none"}),
+    html.Button(id="share-ws-trigger-btn",      style={"display": "none"}),
     html.Button(id="drop-trigger-btn",          style={"display": "none"}),
     html.Button(id="dupe-trigger-btn",          style={"display": "none"}),
     html.Button(id="ws-settings-trigger-btn",   style={"display": "none"}),
