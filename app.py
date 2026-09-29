@@ -55,6 +55,7 @@ app.title = "mTableau"
 # Web mode detection and Flask-Login setup
 IS_FROZEN = getattr(sys, "frozen", False)
 IS_WEB = not IS_FROZEN and os.environ.get("MTABLEAU_BASE") is not None
+print(f"[Auth] IS_WEB={IS_WEB}, IS_FROZEN={IS_FROZEN}, MTABLEAU_BASE={os.environ.get('MTABLEAU_BASE')}")
 
 # Default stub for desktop mode (will be replaced by Flask-Login in web mode)
 if not IS_WEB:
@@ -4413,147 +4414,97 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
 # Authentication Callbacks (Web Mode Only)
 # ─────────────────────────────────────────────
 
-if IS_WEB:
-    @app.callback(
-        Output("login-error", "children"),
-        Output("url", "pathname"),
-        Input("login-btn", "n_clicks"),
-        State("login-email", "value"),
-        State("login-password", "value"),
-        prevent_initial_call=True
-    )
-    def handle_login(n_clicks, email, password):
-        print(f"[Login] triggered, email={email}")
-        if not email or not password:
-            return "Email and password required", dash.no_update
+@app.callback(
+    Output("login-error", "children"),
+    Output("url", "pathname"),
+    Input("login-btn", "n_clicks"),
+    State("login-email", "value"),
+    State("login-password", "value"),
+    prevent_initial_call=True
+)
+def handle_login(n_clicks, email, password):
+    print(f"[Login] triggered, email={email}")
+    if not email or not password:
+        return "Email and password required", dash.no_update
 
-        user = authenticate(email, password)
-        if not user:
-            return "Invalid email or password", dash.no_update
+    user = authenticate(email, password)
+    if not user:
+        return "Invalid email or password", dash.no_update
 
-        login_user(user, remember=True)
+    login_user(user, remember=True)
 
-        # Reload to "/" - _get_layout will show change-password or main layout based on user state
-        return "", "/"
+    # Reload to "/" - _get_layout will show change-password or main layout based on user state
+    return "", "/"
 
-    @app.callback(
-        Output("cp-error", "children"),
-        Output("url", "pathname", allow_duplicate=True),
-        Input("cp-btn", "n_clicks"),
-        State("cp-new-password", "value"),
-        State("cp-confirm-password", "value"),
-        prevent_initial_call=True
-    )
-    def handle_change_password(n_clicks, new_pwd, confirm_pwd):
-        print(f"[Change Password] triggered")
-        if not new_pwd or not confirm_pwd:
-            return "Both password fields required", dash.no_update
+@app.callback(
+    Output("cp-error", "children"),
+    Output("url", "pathname", allow_duplicate=True),
+    Input("cp-btn", "n_clicks"),
+    State("cp-new-password", "value"),
+    State("cp-confirm-password", "value"),
+    prevent_initial_call=True
+)
+def handle_change_password(n_clicks, new_pwd, confirm_pwd):
+    print(f"[Change Password] triggered")
+    if not new_pwd or not confirm_pwd:
+        return "Both password fields required", dash.no_update
 
-        if new_pwd != confirm_pwd:
-            return "Passwords do not match", dash.no_update
+    if new_pwd != confirm_pwd:
+        return "Passwords do not match", dash.no_update
 
-        if len(new_pwd) < 6:
-            return "Password must be at least 6 characters", dash.no_update
+    if len(new_pwd) < 6:
+        return "Password must be at least 6 characters", dash.no_update
 
-        from utils.auth import change_password
-        change_password(current_user.email, new_pwd)
+    from utils.auth import change_password
+    change_password(current_user.email, new_pwd)
 
-        # Reload to "/" - _get_layout will show main layout with must_change_password=False
-        return "", "/"
+    # Reload to "/" - _get_layout will show main layout with must_change_password=False
+    return "", "/"
 
-    @app.callback(
-        Output("url", "pathname", allow_duplicate=True),
-        Input("logout-btn", "n_clicks"),
-        prevent_initial_call=True
-    )
-    def handle_logout(n_clicks):
-        logout_user()
-        # Reload to "/" - _get_layout will show login page since current_user.is_authenticated=False
-        return "/"
+@app.callback(
+    Output("url", "pathname", allow_duplicate=True),
+    Input("logout-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def handle_logout(n_clicks):
+    print("[Logout] triggered")
+    logout_user()
+    # Reload to "/" - _get_layout will show login page since current_user.is_authenticated=False
+    return "/"
 
-    @app.callback(
-        Output("settings-modal", "is_open"),
-        Output("settings-modal-content", "children"),
-        Input("users-btn", "n_clicks"),
-        State("settings-modal", "is_open"),
-        prevent_initial_call=True
-    )
-    def toggle_users_modal(n_clicks, is_open):
-        if not current_user.is_admin:
-            return False, ""
+@app.callback(
+    Output("settings-modal", "is_open"),
+    Output("settings-modal-content", "children"),
+    Input("users-btn", "n_clicks"),
+    State("settings-modal", "is_open"),
+    prevent_initial_call=True
+)
+def toggle_users_modal(n_clicks, is_open):
+    print("[Users] triggered")
+    if not current_user.is_admin:
+        return False, ""
 
-        return True, build_users_layout()
+    return True, build_users_layout()
 
-    @app.callback(
-        Output("user-action-msg", "children"),
-        Output("users-table-body", "children"),
-        Input("add-user-btn", "n_clicks"),
-        State("new-user-name", "value"),
-        State("new-user-email", "value"),
-        State("new-user-password", "value"),
-        State("new-user-admin", "value"),
-        prevent_initial_call=True
-    )
-    def handle_add_user(n_clicks, name, email, password, is_admin):
-        if not current_user.is_admin:
-            return "Not authorized", dash.no_update
+@app.callback(
+    Output("user-action-msg", "children"),
+    Output("users-table-body", "children"),
+    Input("add-user-btn", "n_clicks"),
+    State("new-user-name", "value"),
+    State("new-user-email", "value"),
+    State("new-user-password", "value"),
+    State("new-user-admin", "value"),
+    prevent_initial_call=True
+)
+def handle_add_user(n_clicks, name, email, password, is_admin):
+    if not current_user.is_admin:
+        return "Not authorized", dash.no_update
 
-        if not name or not email or not password:
-            return "All fields required", dash.no_update
+    if not name or not email or not password:
+        return "All fields required", dash.no_update
 
-        from utils.auth import add_user
-        if add_user(email, name, password, is_admin):
-            # Rebuild users table
-            users = list_users()
-            rows = []
-            for u in users:
-                rows.append(html.Tr([
-                    html.Td(u["name"], style={"fontSize": "13px"}),
-                    html.Td(u["email"], style={"fontSize": "13px"}),
-                    html.Td("Yes" if u["is_admin"] else "No", style={"fontSize": "13px"}),
-                    html.Td([
-                        dbc.Button("Reset PW", id={"type": "reset-pw-btn", "index": u["email"]},
-                                  color="warning", size="sm", outline=True, className="me-1",
-                                  style={"fontSize": "10px", "padding": "1px 6px"}),
-                        dbc.Button("Delete", id={"type": "delete-user-btn", "index": u["email"]},
-                                  color="danger", size="sm", outline=True,
-                                  style={"fontSize": "10px", "padding": "1px 6px"}),
-                    ], style={"whiteSpace": "nowrap"}),
-                ]))
-            return f"✅ User {email} added", rows
-        else:
-            return f"❌ User {email} already exists", dash.no_update
-
-    @app.callback(
-        Output("user-action-msg", "children", allow_duplicate=True),
-        Output("users-table-body", "children", allow_duplicate=True),
-        Input({"type": "reset-pw-btn", "index": ALL}, "n_clicks"),
-        Input({"type": "delete-user-btn", "index": ALL}, "n_clicks"),
-        prevent_initial_call=True
-    )
-    def handle_user_actions(reset_clicks, delete_clicks):
-        if not current_user.is_admin:
-            return "Not authorized", dash.no_update
-
-        triggered = ctx.triggered_id
-        if not triggered:
-            return dash.no_update, dash.no_update
-
-        action_type = triggered.get("type")
-        email = triggered.get("index")
-
-        from utils.auth import reset_password, delete_user
-
-        if action_type == "reset-pw-btn":
-            temp_pwd = "TempPwd123!"
-            reset_password(email, temp_pwd)
-            msg = f"✅ Password reset for {email}. Temp: {temp_pwd}"
-        elif action_type == "delete-user-btn":
-            delete_user(email)
-            msg = f"✅ User {email} deleted"
-        else:
-            return dash.no_update, dash.no_update
-
+    from utils.auth import add_user
+    if add_user(email, name, password, is_admin):
         # Rebuild users table
         users = list_users()
         rows = []
@@ -4571,7 +4522,58 @@ if IS_WEB:
                               style={"fontSize": "10px", "padding": "1px 6px"}),
                 ], style={"whiteSpace": "nowrap"}),
             ]))
-        return msg, rows
+        return f"✅ User {email} added", rows
+    else:
+        return f"❌ User {email} already exists", dash.no_update
+
+@app.callback(
+    Output("user-action-msg", "children", allow_duplicate=True),
+    Output("users-table-body", "children", allow_duplicate=True),
+    Input({"type": "reset-pw-btn", "index": ALL}, "n_clicks"),
+    Input({"type": "delete-user-btn", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True
+)
+def handle_user_actions(reset_clicks, delete_clicks):
+    if not current_user.is_admin:
+        return "Not authorized", dash.no_update
+
+    triggered = ctx.triggered_id
+    if not triggered:
+        return dash.no_update, dash.no_update
+
+    action_type = triggered.get("type")
+    email = triggered.get("index")
+
+    from utils.auth import reset_password, delete_user
+
+    if action_type == "reset-pw-btn":
+        temp_pwd = "TempPwd123!"
+        reset_password(email, temp_pwd)
+        msg = f"✅ Password reset for {email}. Temp: {temp_pwd}"
+    elif action_type == "delete-user-btn":
+        delete_user(email)
+        msg = f"✅ User {email} deleted"
+    else:
+        return dash.no_update, dash.no_update
+
+    # Rebuild users table
+    users = list_users()
+    rows = []
+    for u in users:
+        rows.append(html.Tr([
+            html.Td(u["name"], style={"fontSize": "13px"}),
+            html.Td(u["email"], style={"fontSize": "13px"}),
+            html.Td("Yes" if u["is_admin"] else "No", style={"fontSize": "13px"}),
+            html.Td([
+                dbc.Button("Reset PW", id={"type": "reset-pw-btn", "index": u["email"]},
+                          color="warning", size="sm", outline=True, className="me-1",
+                          style={"fontSize": "10px", "padding": "1px 6px"}),
+                dbc.Button("Delete", id={"type": "delete-user-btn", "index": u["email"]},
+                          color="danger", size="sm", outline=True,
+                          style={"fontSize": "10px", "padding": "1px 6px"}),
+            ], style={"whiteSpace": "nowrap"}),
+        ]))
+    return msg, rows
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8050, debug=True)
