@@ -1,8 +1,8 @@
 import json
-import hashlib
 import os
 from pathlib import Path
 from flask_login import UserMixin
+import bcrypt
 
 class User(UserMixin):
     def __init__(self, email, name, is_admin=False, must_change_password=False):
@@ -18,8 +18,8 @@ def _get_users_file():
     return base_dir / "data" / "users.json"
 
 def _hash_password(password):
-    """Hash a password using SHA256."""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash a password using bcrypt."""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def _load_users():
     """Load users from JSON file."""
@@ -54,20 +54,26 @@ def init_auth():
 
 def authenticate(email, password):
     """Authenticate user by email and password. Returns User object or None."""
+    email = email.strip().lower()
     users = _load_users()
+
     if email not in users:
         return None
 
     user_data = users[email]
-    password_hash = _hash_password(password)
+    stored_hash = user_data.get("password_hash", "")
 
-    if user_data.get("password_hash") == password_hash:
-        return User(
-            email=email,
-            name=user_data.get("name", email),
-            is_admin=user_data.get("is_admin", False),
-            must_change_password=user_data.get("must_change_password", False)
-        )
+    try:
+        if bcrypt.checkpw(password.encode(), stored_hash.encode()):
+            return User(
+                email=email,
+                name=user_data.get("name", email),
+                is_admin=user_data.get("is_admin", False),
+                must_change_password=user_data.get("must_change_password", False)
+            )
+    except ValueError:
+        print(f"[Auth] unusable hash for {email}")
+
     return None
 
 def get_user(email):
@@ -93,6 +99,7 @@ def must_change_password(email):
 
 def change_password(email, new_password):
     """Change user password and clear must_change_password flag."""
+    email = email.strip().lower()
     users = _load_users()
     if email not in users:
         return False
@@ -104,6 +111,7 @@ def change_password(email, new_password):
 
 def add_user(email, name, password, is_admin=False):
     """Add new user."""
+    email = email.strip().lower()
     users = _load_users()
     if email in users:
         return False  # User already exists
@@ -143,6 +151,7 @@ def list_users():
 
 def reset_password(email, new_password):
     """Reset user password and set must_change_password flag."""
+    email = email.strip().lower()
     users = _load_users()
     if email not in users:
         return False

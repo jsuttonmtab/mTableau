@@ -6,8 +6,8 @@ def build_login_layout():
         html.Div([
             html.Div([
                 html.Img(src="/assets/mtableauLogo2.png",
-                         style={"height": "60px", "marginBottom": "20px",
-                                "display": "block", "margin": "0 auto"}),
+                         style={"height": "60px", "margin": "0 auto 20px auto",
+                                "display": "block"}),
                 html.H4("Sign In", className="mb-3 fw-bold text-center"),
                 dbc.Input(id="login-email", placeholder="Email",
                          type="email", size="sm", className="mb-2"),
@@ -15,12 +15,13 @@ def build_login_layout():
                          type="password", size="sm", className="mb-3"),
                 dbc.Button("Sign In", id="login-btn",
                           color="primary", className="w-100 mb-2"),
-                html.Div(id="login-error", style={"fontSize": "12px"}),
+                html.Div(id="login-error", className="text-danger text-center",
+                        style={"fontSize": "12px"}),
             ], style={"width": "320px", "padding": "30px",
                       "backgroundColor": "white", "borderRadius": "8px",
                       "boxShadow": "0 2px 10px rgba(0,0,0,0.1)"}),
-        ], style={"display": "flex", "justifyContent": "center",
-                  "alignItems": "center", "height": "100vh",
+        ], style={"position": "fixed", "inset": "0", "display": "flex",
+                  "justifyContent": "center", "alignItems": "center",
                   "backgroundColor": "#f0f2f5"}),
     ])
 
@@ -37,11 +38,12 @@ def build_change_password_layout():
                          type="password", size="sm", className="mb-3"),
                 dbc.Button("Change Password", id="cp-btn",
                           color="primary", className="w-100 mb-2"),
-                html.Div(id="cp-error", style={"fontSize": "12px"}),
+                html.Div(id="cp-error", className="text-danger text-center",
+                        style={"fontSize": "12px"}),
             ], style={"width": "320px", "padding": "30px",
                       "backgroundColor": "white", "borderRadius": "8px",
                       "boxShadow": "0 2px 10px rgba(0,0,0,0.1)"}),
-        ], style={"display": "flex", "justifyContent": "center",
-                  "alignItems": "center", "height": "100vh",
+        ], style={"position": "fixed", "inset": "0", "display": "flex",
+                  "justifyContent": "center", "alignItems": "center",
                   "backgroundColor": "#f0f2f5"}),
     ])

@@ -4427,54 +4427,63 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
 
 @app.callback(
     Output("login-error", "children"),
-    Output("url", "pathname", allow_duplicate=True),
+    Output("url", "href", allow_duplicate=True),
     Input("login-btn", "n_clicks"),
+    Input("login-password", "n_submit"),
     State("login-email", "value"),
     State("login-password", "value"),
     prevent_initial_call=True
 )
-def handle_login(n_clicks, email, password):
+def handle_login(n_clicks, n_submit, email, password):
     print(f"[Login] triggered, email={email}")
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not email or not password:
+        print(f"[Login] FAIL: Missing email or password")
         return "Email and password required", dash.no_update
 
     user = authenticate(email, password)
     if not user:
+        print(f"[Login] FAIL: Invalid credentials for {email}")
         return "Invalid email or password", dash.no_update
 
     login_user(user, remember=True)
-
-    # Reload to "/" - _get_layout will show change-password or main layout based on user state
-    return "", "/"
+    print(f"[Login] SUCCESS: {email}")
+    mtableau_base = os.environ.get("MTABLEAU_BASE", "/")
+    return "", f"{mtableau_base}/?r={int(time.time())}"
 
 @app.callback(
     Output("cp-error", "children"),
-    Output("url", "pathname", allow_duplicate=True),
+    Output("url", "href", allow_duplicate=True),
     Input("cp-btn", "n_clicks"),
+    Input("cp-confirm-password", "n_submit"),
     State("cp-new-password", "value"),
     State("cp-confirm-password", "value"),
     prevent_initial_call=True
 )
-def handle_change_password(n_clicks, new_pwd, confirm_pwd):
+def handle_change_password(n_clicks, n_submit, new_pwd, confirm_pwd):
     print(f"[Change Password] triggered")
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not new_pwd or not confirm_pwd:
+        print(f"[Change Password] FAIL: Missing password fields")
         return "Both password fields required", dash.no_update
 
     if new_pwd != confirm_pwd:
+        print(f"[Change Password] FAIL: Passwords do not match")
         return "Passwords do not match", dash.no_update
 
     if len(new_pwd) < 6:
+        print(f"[Change Password] FAIL: Password too short")
         return "Password must be at least 6 characters", dash.no_update
 
-    from utils.auth import change_password
-    change_password(current_user.email, new_pwd)
-
-    # Reload to "/" - _get_layout will show main layout with must_change_password=False
-    return "", "/"
+    if change_password(current_user.email, new_pwd):
+        print(f"[Change Password] SUCCESS: {current_user.email}")
+        mtableau_base = os.environ.get("MTABLEAU_BASE", "/")
+        return "", f"{mtableau_base}/?r={int(time.time())}"
+    else:
+        print(f"[Change Password] FAIL: Could not save password")
+        return "Error changing password", dash.no_update
 
 @app.callback(
     Output("url", "pathname", allow_duplicate=True),
