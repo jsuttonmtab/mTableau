@@ -1880,8 +1880,6 @@ def restore_tabs(worksheets, current_value):
 
         # Keep label plain text - icon/shared state handled by JS
         tabs.append(dcc.Tab(label=w, value=w))
-    else:
-        tabs.append(dcc.Tab(label=w, value=w))
 
     active = current_value if current_value in worksheets else worksheets[0]
     return tabs, active
