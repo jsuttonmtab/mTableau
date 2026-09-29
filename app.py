@@ -202,6 +202,9 @@ def _duplicate_ws_state(src_name, dst_name, user_email=None):
             store = cfg.get(key, {})
             if src_key in store:
                 store[dst_key] = copy.deepcopy(store[src_key])
+                # Reset shared_log for duplicated worksheet
+                if key == "ws_state" and "shared_log" in store[dst_key]:
+                    store[dst_key]["shared_log"] = []
                 cfg[key] = store
         save_config(cfg, user_email=user_email)
     except Exception as e:
@@ -1098,10 +1101,12 @@ def _get_layout():
     ], id="users-modal", is_open=False, size="lg") if IS_WEB and current_user.is_admin else None),
 
     (dbc.Modal([
-        dbc.ModalHeader("Share Worksheet Copy"),
+        dbc.ModalHeader(id="share-ws-header", children="Share Worksheet Copy"),
         dbc.ModalBody([
             html.Div("Select users to share this worksheet copy with:", className="mb-3"),
+            dbc.Checkbox(id="share-ws-select-all", label="Select all", className="mb-2"),
             dbc.Checklist(id="share-ws-users", className="mb-3"),
+            html.Div(id="share-ws-history", style={"fontSize": "12px", "color": "#666", "marginBottom": "12px"}),
             html.Div(id="share-ws-status", style={"fontSize": "12px", "marginBottom": "12px"}),
         ]),
         dbc.ModalFooter([
@@ -4666,7 +4671,12 @@ def display_sharing_alerts(alerts):
 
 @app.callback(
     Output("share-ws-modal", "is_open"),
+    Output("share-ws-header", "children"),
     Output("share-ws-users", "options"),
+    Output("share-ws-users", "value"),
+    Output("share-ws-status", "children"),
+    Output("share-ws-history", "children"),
+    Output("share-ws-select-all", "value"),
     Input("share-ws-payload", "data"),
     Input("share-ws-cancel-btn", "n_clicks"),
     prevent_initial_call=True
@@ -4675,7 +4685,7 @@ def open_share_modal(payload, cancel_clicks):
     triggered = ctx.triggered_id
 
     if triggered == "share-ws-cancel-btn":
-        return False, []
+        return False, "Share Worksheet Copy", [], [], "", "", False
 
     if not payload or payload == "":
         raise dash.exceptions.PreventUpdate
@@ -4690,7 +4700,50 @@ def open_share_modal(payload, cancel_clicks):
         if u['email'] != current_email
     ]
 
-    return True, options
+    # Get share history for this worksheet
+    cfg = load_config(user_email=current_email)
+    ws_key = payload.replace(" ", "_")
+    ws_state = cfg.get("ws_state", {}).get(ws_key, {})
+    shared_log = ws_state.get("shared_log", [])
+
+    history_text = ""
+    if shared_log:
+        history_items = [f"{log['to_name']} ({log['to_email']}) on {log.get('sent_at', '?')}" for log in shared_log]
+        history_text = f"Already sent to: {', '.join(history_items[:3])}"
+        if len(shared_log) > 3:
+            history_text += f" and {len(shared_log) - 3} more"
+
+    return True, f"Share a copy of '{payload}'", options, [], "", history_text, False
+
+
+@app.callback(
+    Output("share-ws-users", "value", allow_duplicate=True),
+    Output("share-ws-select-all", "value", allow_duplicate=True),
+    Input("share-ws-select-all", "value"),
+    Input("share-ws-users", "value"),
+    State("share-ws-users", "options"),
+    prevent_initial_call=True
+)
+def sync_select_all(select_all_checked, selected_users, all_options):
+    triggered = ctx.triggered_id
+
+    if triggered == "share-ws-select-all":
+        if select_all_checked:
+            # Check all options
+            all_values = [opt['value'] for opt in all_options]
+            return all_values, True
+        else:
+            # Uncheck all
+            return [], False
+
+    # User unchecked individual items
+    if triggered == "share-ws-users":
+        all_values = [opt['value'] for opt in all_options]
+        # Check select-all only if all users are selected
+        is_all_selected = len(selected_users) == len(all_values) and set(selected_users) == set(all_values)
+        return dash.no_update, is_all_selected
+
+    raise dash.exceptions.PreventUpdate
 
 
 @app.callback(
@@ -4732,9 +4785,15 @@ def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs)
                     referenced_calcs[calc_name] = calcs[calc_name]
 
     # Share with selected users
+    from utils.auth import get_user
+    import time
+
     shared_count = 0
     for recipient_email in selected_users:
         try:
+            recipient = get_user(recipient_email)
+            recipient_name = recipient.name if recipient else recipient_email
+
             add_to_inbox(
                 recipient_email,
                 str(uuid.uuid4()),
@@ -4744,9 +4803,28 @@ def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs)
                 ws_state,
                 referenced_calcs
             )
+
+            # Record in shared_log
+            if "ws_state" not in cfg:
+                cfg["ws_state"] = {}
+            if ws_key not in cfg["ws_state"]:
+                cfg["ws_state"][ws_key] = {}
+            if "shared_log" not in cfg["ws_state"][ws_key]:
+                cfg["ws_state"][ws_key]["shared_log"] = []
+
+            cfg["ws_state"][ws_key]["shared_log"].append({
+                "to_email": recipient_email,
+                "to_name": recipient_name,
+                "sent_at": time.time()
+            })
+
             shared_count += 1
         except Exception as e:
             print(f"Error sharing with {recipient_email}: {e}")
+
+    # Save config with shared_log
+    if shared_count > 0:
+        save_config(cfg, user_email=user_email)
 
     status_msg = f"✅ Shared with {shared_count} user(s)" if shared_count > 0 else "❌ No users shared"
     return status_msg, False
