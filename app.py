@@ -4784,7 +4784,7 @@ def open_share_modal(payload, cancel_clicks):
         ])
         share_btn_disabled = False
 
-    return True, f"Share a copy of '{payload}'", has_access_section, can_share_section, share_btn_disabled, ""
+    return True, f"Sharing: '{payload}'", has_access_section, can_share_section, share_btn_disabled, ""
 
 
 @app.callback(
@@ -4833,7 +4833,7 @@ def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs)
 
     from utils.sharing import add_to_inbox
     from utils.share_registry import create_share, get_shares_from
-    from utils.auth import get_user, current_user
+    from utils.auth import get_user
     import datetime
 
     user_email = _user_email()

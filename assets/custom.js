@@ -39,7 +39,7 @@ setTimeout(function() {
     menu.innerHTML = '<div id="ctx-rename" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">✏️ <span>Rename</span></div>' +
         '<div id="ctx-duplicate" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">⧉ <span>Duplicate</span></div>' +
         '<div id="ctx-show-sql" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">📋 <span>Show SQL</span></div>' +
-        '<div id="ctx-share-copy" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">🔗 <span>Share copy with...</span></div>' +
+        '<div id="ctx-share-copy" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">🔗 <span>Sharing</span></div>' +
         '<div style="border-top:1px solid #dee2e6;margin:4px 0;"></div>' +
         '<div id="ctx-settings" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">⚙️ <span>Worksheet Settings</span></div>';
     document.body.appendChild(menu);
