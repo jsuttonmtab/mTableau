@@ -96,23 +96,9 @@ if IS_WEB:
     def load_user(user_id):
         return get_user(user_id)
 
-    # Routes to exempt from login requirement
-    EXEMPT_ROUTES = {"/login", "/logout", "/_dash-component-suites", "/assets",
-                     "/_favicon.ico", "/_dash-layout", "/_dash-dependencies",
-                     "/_reload-hash", "/_dash-update-component"}
-
-    @app.server.before_request
-    def require_login():
-        """Redirect unauthenticated users to login."""
-        if request.path.startswith("/_dash"):
-            return  # Allow Dash internal requests
-
-        is_exempt = any(request.path.startswith(route) for route in EXEMPT_ROUTES)
-        if is_exempt:
-            return
-
-        if not current_user.is_authenticated:
-            return redirect(f"{os.environ.get('MTABLEAU_BASE', '')}/login")
+    # Note: No before_request needed - /login is a Dash route, not a Flask route.
+    # _get_layout handles showing login page when user is not authenticated.
+    # This is the correct Dash pattern for auth (avoids infinite redirect loops).
 
     @app.server.route("/logout")
     def logout_route():
@@ -4446,10 +4432,8 @@ if IS_WEB:
 
         login_user(user, remember=True)
 
-        if user.must_change_password:
-            return "", f"{os.environ.get('MTABLEAU_BASE', '')}/change-password"
-
-        return "", f"{os.environ.get('MTABLEAU_BASE', '')}/"
+        # Reload to "/" - _get_layout will show change-password or main layout based on user state
+        return "", "/"
 
     @app.callback(
         Output("cp-error", "children"),
@@ -4472,7 +4456,8 @@ if IS_WEB:
         from utils.auth import change_password
         change_password(current_user.email, new_pwd)
 
-        return "", f"{os.environ.get('MTABLEAU_BASE', '')}/"
+        # Reload to "/" - _get_layout will show main layout with must_change_password=False
+        return "", "/"
 
     @app.callback(
         Output("url", "pathname", allow_duplicate=True),
@@ -4481,7 +4466,8 @@ if IS_WEB:
     )
     def handle_logout(n_clicks):
         logout_user()
-        return f"{os.environ.get('MTABLEAU_BASE', '')}/login"
+        # Reload to "/" - _get_layout will show login page since current_user.is_authenticated=False
+        return "/"
 
     @app.callback(
         Output("settings-modal", "is_open"),
