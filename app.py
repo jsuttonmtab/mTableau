@@ -774,9 +774,9 @@ def _get_layout():
     # Check authentication if IS_WEB mode
     if IS_WEB:
         if not current_user.is_authenticated:
-            return build_login_layout()
+            return html.Div([dcc.Location(id="url", refresh=True), build_login_layout()])
         if current_user.must_change_password:
-            return build_change_password_layout()
+            return html.Div([dcc.Location(id="url", refresh=True), build_change_password_layout()])
 
     # Read worksheets fresh from config on each page load (not cached)
     current_worksheets = load_config().get("worksheets", ["Worksheet 1"])
