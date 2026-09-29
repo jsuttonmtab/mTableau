@@ -347,8 +347,7 @@ def _get_filter_options_for_field(field, fmt="none"):
         result = con.execute(sql).fetchdf()
         con.close()
         print(f"[FilterDebug] Query for field={field}: {sql[:100]}{'...' if len(sql) > 100 else ''} -> {len(result)} rows")
-        return [{"label": str(r).strip(), "value": str(r).strip()}
-                for r in result["val"] if r is not None]
+        return _dedupe_options(result["val"])
     except Exception as e:
         print(f"Filter options error for {field}: {e}")
         return []
@@ -477,8 +476,26 @@ def _get_cascaded_options(field, fmt, where_extra, search_like=None, reverse=Fal
     finally:
         con.close()
     print(f"[FilterDebug] cascade SQL for {field}: {sql} -> {len(result)} rows")
-    return [{"label": str(v).strip(), "value": str(v).strip()}
-            for v in result["val"] if v is not None]
+    return _dedupe_options(result["val"])
+
+
+def _dedupe_options(values):
+    """
+    Build checklist options from raw values, stripping whitespace and dropping
+    duplicates. Values that differ only by leading/trailing spaces (e.g.
+    "Victoria's Secret" vs "Victoria's Secret ") would otherwise become two
+    options with the same value, which leaves stale rows in the checklist.
+    """
+    seen, options = set(), []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        options.append({"label": s, "value": s})
+    return options
 
 
 def _get_options_for_field(field, fmt, calcs):
