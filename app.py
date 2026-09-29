@@ -31,6 +31,19 @@ from utils.config import load_config, save_config, get_base_dir
 import threading
 import duckdb
 
+# Auth imports (try/except to support desktop mode without flask-login)
+try:
+    from flask_login import login_user, logout_user, current_user
+    from utils.auth import (
+        init_auth, authenticate, must_change_password,
+        change_password, add_user, delete_user, list_users, reset_password
+    )
+    from pages.login import build_login_layout, build_change_password_layout
+    from pages.users import build_users_layout
+    HAS_AUTH = True
+except ImportError:
+    HAS_AUTH = False
+
 if getattr(sys, 'frozen', False):
     _base = Path(sys.executable).parent
     _assets_candidate = _base / "_internal" / "assets"
@@ -75,14 +88,12 @@ if not IS_WEB:
     current_user = StubCurrentUser()
 
 if IS_WEB:
-    from flask_login import LoginManager, login_user, logout_user, current_user, login_required
+    from flask_login import LoginManager, login_required
     from flask import redirect, request
-    from utils.auth import init_auth, authenticate, get_user, list_users
-    from pages.login import build_login_layout, build_change_password_layout
-    from pages.users import build_users_layout
 
     # Initialize auth system
-    init_auth()
+    if HAS_AUTH:
+        init_auth()
 
     # Set Flask secret key
     secret_key = os.environ.get("SECRET_KEY", "mtableau-dev-key-change-in-production")
@@ -4424,6 +4435,8 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
 )
 def handle_login(n_clicks, email, password):
     print(f"[Login] triggered, email={email}")
+    if not HAS_AUTH:
+        raise dash.exceptions.PreventUpdate
     if not email or not password:
         return "Email and password required", dash.no_update
 
@@ -4446,6 +4459,8 @@ def handle_login(n_clicks, email, password):
 )
 def handle_change_password(n_clicks, new_pwd, confirm_pwd):
     print(f"[Change Password] triggered")
+    if not HAS_AUTH:
+        raise dash.exceptions.PreventUpdate
     if not new_pwd or not confirm_pwd:
         return "Both password fields required", dash.no_update
 
@@ -4468,6 +4483,8 @@ def handle_change_password(n_clicks, new_pwd, confirm_pwd):
 )
 def handle_logout(n_clicks):
     print("[Logout] triggered")
+    if not HAS_AUTH:
+        raise dash.exceptions.PreventUpdate
     logout_user()
     # Reload to "/" - _get_layout will show login page since current_user.is_authenticated=False
     return "/"
@@ -4481,6 +4498,8 @@ def handle_logout(n_clicks):
 )
 def toggle_users_modal(n_clicks, is_open):
     print("[Users] triggered")
+    if not HAS_AUTH:
+        raise dash.exceptions.PreventUpdate
     if not current_user.is_admin:
         return False, ""
 
@@ -4497,13 +4516,13 @@ def toggle_users_modal(n_clicks, is_open):
     prevent_initial_call=True
 )
 def handle_add_user(n_clicks, name, email, password, is_admin):
+    if not HAS_AUTH:
+        raise dash.exceptions.PreventUpdate
     if not current_user.is_admin:
         return "Not authorized", dash.no_update
 
     if not name or not email or not password:
         return "All fields required", dash.no_update
-
-    from utils.auth import add_user
     if add_user(email, name, password, is_admin):
         # Rebuild users table
         users = list_users()
@@ -4534,6 +4553,8 @@ def handle_add_user(n_clicks, name, email, password, is_admin):
     prevent_initial_call=True
 )
 def handle_user_actions(reset_clicks, delete_clicks):
+    if not HAS_AUTH:
+        raise dash.exceptions.PreventUpdate
     if not current_user.is_admin:
         return "Not authorized", dash.no_update
 
@@ -4543,8 +4564,6 @@ def handle_user_actions(reset_clicks, delete_clicks):
 
     action_type = triggered.get("type")
     email = triggered.get("index")
-
-    from utils.auth import reset_password, delete_user
 
     if action_type == "reset-pw-btn":
         temp_pwd = "TempPwd123!"

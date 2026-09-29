@@ -20,7 +20,7 @@ def build_login_layout():
                       "backgroundColor": "white", "borderRadius": "8px",
                       "boxShadow": "0 2px 10px rgba(0,0,0,0.1)"}),
         ], style={"display": "flex", "justifyContent": "center",
-                  "alignItems": "center", "minHeight": "100vh",
+                  "alignItems": "center", "height": "100vh",
                   "backgroundColor": "#f0f2f5"}),
     ])
 
@@ -42,6 +42,6 @@ def build_change_password_layout():
                       "backgroundColor": "white", "borderRadius": "8px",
                       "boxShadow": "0 2px 10px rgba(0,0,0,0.1)"}),
         ], style={"display": "flex", "justifyContent": "center",
-                  "alignItems": "center", "minHeight": "100vh",
+                  "alignItems": "center", "height": "100vh",
                   "backgroundColor": "#f0f2f5"}),
     ])
