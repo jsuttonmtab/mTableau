@@ -1,1 +1,0 @@
-{"rows": ["CLIENT_NAME", "USER_NAME", "LONG_NAME"], "cols": ["TABRUN_MY"], "date_formats": {"TABRUN_MY": "none", "filters|TABRUN_MY": "year"}, "measure": "COUNTD_USAGE_ID"}

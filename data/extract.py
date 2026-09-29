@@ -22,6 +22,21 @@ QMNEM_PATH       = DATA_DIR / "qmnem.parquet"
 EXTRACT_PATH     = DATA_DIR / "extract.parquet"
 
 
+# ── Text cleaning ─────────────────────────────────────────────────────────────
+# Source data contains stray CR/LF/tab/non-breaking spaces (e.g. "Name \r").
+# The old TRIM-then-remove-\r order left a trailing space behind and only removed
+# the first \r, creating near-duplicate values ("Victoria's Secret" vs
+# "Victoria's Secret ") that break filtering. Convert all of those to spaces,
+# then trim both ends.
+_WS_CLASS = r"[\r\n\t\x{00A0}]"
+
+
+def _clean(col):
+    """SQL expression: col with control whitespace normalised and ends trimmed."""
+    return f"TRIM(regexp_replace(CAST({col} AS VARCHAR), '{_WS_CLASS}', ' ', 'g'))"
+
+
+
 def _get_csv_paths():
     cfg         = load_config()
     upload_path = Path(cfg.get("MYSQL_UPLOAD_PATH", ""))
@@ -359,13 +374,13 @@ def build_extract(progress_callback=None):
                 SELECT
                     f.USAGE_ID,
                     f.USER_ID,
-                    regexp_replace(TRIM(f.ACTION_TYPE), '\r', '')  AS ACTION_TYPE,
+                    {_clean('f.ACTION_TYPE')}  AS ACTION_TYPE,
                     f.TABRUN_TS,
                     f.TABRUN_MY,
                     DATE(f.TABRUN_TS)    AS ACTION_DATE,
-                    regexp_replace(TRIM(u.USER_NAME),   '\r', '')  AS USER_NAME,
-                    regexp_replace(TRIM(u.USER_EMAIL),  '\r', '')  AS USER_EMAIL,
-                    regexp_replace(TRIM(c.CLIENT_NAME), '\r', '')  AS CLIENT_NAME
+                    {_clean('u.USER_NAME')}  AS USER_NAME,
+                    {_clean('u.USER_EMAIL')}  AS USER_EMAIL,
+                    {_clean('c.CLIENT_NAME')}  AS CLIENT_NAME
                 FROM      raw_facts f
                 -- Deduplicate users to one row per USER_ID for this join
                 -- (GROUP_NAME lives in user_group.parquet instead)
@@ -466,9 +481,9 @@ def build_extract(progress_callback=None):
             COPY (
                 SELECT
                     USER_ID,
-                    regexp_replace(TRIM(USER_NAME),   '\r', '') AS USER_NAME,
-                    regexp_replace(TRIM(GROUP_NAME),  '\r', '') AS GROUP_NAME,
-                    regexp_replace(TRIM(CLIENT_NAME), '\r', '') AS CLIENT_NAME
+                    {_clean('USER_NAME')} AS USER_NAME,
+                    {_clean('GROUP_NAME')} AS GROUP_NAME,
+                    {_clean('CLIENT_NAME')} AS CLIENT_NAME
                 FROM users
             ) TO '{str(temp_user_group)}' (FORMAT PARQUET, COMPRESSION ZSTD)
         """)
@@ -490,7 +505,7 @@ def build_extract(progress_callback=None):
             try:
                 con.execute(f"""
                     COPY (
-                        SELECT USAGE_ID, TRIM(CAST(QMNEM AS VARCHAR)) AS QMNEM
+                        SELECT USAGE_ID, {_clean('QMNEM')} AS QMNEM
                         FROM mysql_db.usageqmnem
                     ) TO '{str(temp_qmnem)}' (FORMAT PARQUET, COMPRESSION ZSTD)
                 """)
@@ -523,9 +538,9 @@ def build_extract(progress_callback=None):
             COPY (
                 SELECT
                     STUDY_ID,
-                    regexp_replace(TRIM(EXT_STUDY_ID), '\r', '') AS EXT_STUDY_ID,
-                    regexp_replace(TRIM(LONG_NAME),    '\r', '') AS LONG_NAME,
-                    regexp_replace(TRIM(STUDYID),      '\r', '') AS STUDYID,
+                    {_clean('EXT_STUDY_ID')} AS EXT_STUDY_ID,
+                    {_clean('LONG_NAME')} AS LONG_NAME,
+                    {_clean('STUDYID')} AS STUDYID,
                     STUDYYEAR
                 FROM studies
             ) TO '{str(temp_study)}' (FORMAT PARQUET, COMPRESSION ZSTD)

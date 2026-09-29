@@ -1,3 +1,4 @@
+import copy
 import json
 from pathlib import Path
 import sys
@@ -50,12 +51,12 @@ def load_config(user_email=None):
     try:
         mtime = path.stat().st_mtime
         if cache_key in _cache and mtime == _cache_mtime.get(cache_key):
-            return dict(_cache[cache_key])  # shallow copy
+            return copy.deepcopy(_cache[cache_key])
         with open(path, "r") as f:
             data = json.load(f)
         _cache[cache_key]       = {**DEFAULT_CONFIG, **data}
         _cache_mtime[cache_key] = mtime
-        return dict(_cache[cache_key])
+        return copy.deepcopy(_cache[cache_key])
     except FileNotFoundError:
         # New user or first load — return default
         if user_email:
@@ -74,10 +75,10 @@ def load_config(user_email=None):
                 "MYSQL_UPLOAD_PATH": os.getenv("MYSQL_UPLOAD_PATH", ""),
             }
         except Exception as e2:
-            print(f"DEBUG load_config .env error: {e2}")
+            print(f"[Config] ERROR reading .env: {e2}")
             return DEFAULT_CONFIG.copy()
     except Exception as e:
-        print(f"DEBUG load_config error: {e}")
+        print(f"[Config] ERROR loading config ({path}): {e}")
         return DEFAULT_CONFIG.copy()
 
 
@@ -87,12 +88,14 @@ def save_config(data, user_email=None):
     try:
         path = get_config_path(user_email)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
+        tmp.replace(path)
         # Update cache immediately
-        _cache[cache_key]       = {**DEFAULT_CONFIG, **data}
+        _cache[cache_key]       = copy.deepcopy({**DEFAULT_CONFIG, **data})
         _cache_mtime[cache_key] = path.stat().st_mtime
         return True
     except Exception as e:
-        print(f"DEBUG save_config ERROR: {e}")
+        print(f"[Config] ERROR saving config: {e}")
         return False

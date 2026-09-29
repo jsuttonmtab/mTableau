@@ -73,6 +73,15 @@ IS_WEB = not IS_FROZEN and os.environ.get("MTABLEAU_BASE") is not None
 print(f"[Auth] IS_WEB={IS_WEB}, IS_FROZEN={IS_FROZEN}, MTABLEAU_BASE={os.environ.get('MTABLEAU_BASE')}")
 
 # ── Per-user isolation helper ──────────────────────────────────────────────────
+DEBUG_LOG = os.environ.get("MTABLEAU_DEBUG") == "1"
+
+
+def dlog(*args, **kwargs):
+    """Verbose diagnostics; only printed when MTABLEAU_DEBUG=1 is set."""
+    if DEBUG_LOG:
+        print(*args, **kwargs)
+
+
 def _user_email():
     """Get current user email for per-user isolation, or None for global/desktop."""
     if IS_WEB and HAS_AUTH and current_user.is_authenticated:
@@ -127,9 +136,20 @@ if IS_WEB:
     def load_user(user_id):
         return get_user(user_id)
 
-    # Note: No before_request needed - /login is a Dash route, not a Flask route.
-    # _get_layout handles showing login page when user is not authenticated.
-    # This is the correct Dash pattern for auth (avoids infinite redirect loops).
+    # Pages are gated by _get_layout (login page when not authenticated). Dash
+    # callbacks are separate POSTs, so gate those here: when logged out, only the
+    # login callback may run. Everything else gets 401.
+    @app.server.before_request
+    def _require_login_for_callbacks():
+        if request.method != "POST" or not request.path.endswith("/_dash-update-component"):
+            return None
+        if current_user.is_authenticated:
+            return None
+        body = request.get_json(silent=True) or {}
+        if "login-error." in str(body.get("output", "")):
+            return None
+        from flask import jsonify
+        return jsonify({"error": "not authenticated"}), 401
 
     @app.server.route("/logout")
     def logout_route():
@@ -346,7 +366,7 @@ def _get_filter_options_for_field(field, fmt="none"):
                       FROM {parquet_src} WHERE {field} IS NOT NULL ORDER BY LOWER(CAST(val AS VARCHAR))"""
         result = con.execute(sql).fetchdf()
         con.close()
-        print(f"[FilterDebug] Query for field={field}: {sql[:100]}{'...' if len(sql) > 100 else ''} -> {len(result)} rows")
+        dlog(f"[FilterDebug] Query for field={field}: {sql[:100]}{'...' if len(sql) > 100 else ''} -> {len(result)} rows")
         return _dedupe_options(result["val"])
     except Exception as e:
         print(f"Filter options error for {field}: {e}")
@@ -475,7 +495,7 @@ def _get_cascaded_options(field, fmt, where_extra, search_like=None, reverse=Fal
         result = con.execute(sql).fetchdf()
     finally:
         con.close()
-    print(f"[FilterDebug] cascade SQL for {field}: {sql} -> {len(result)} rows")
+    dlog(f"[FilterDebug] cascade SQL for {field}: {sql} -> {len(result)} rows")
     return _dedupe_options(result["val"])
 
 
@@ -796,8 +816,11 @@ def build_duck_where(field_filters, date_formats):
     from utils.query_engine import FIELD_REGISTRY
     from utils.config import load_config as _load_config
     duck_where = []
-    cfg   = _load_config()
+    user_email = _user_email()
+    cfg   = _load_config(user_email=user_email)
     calcs = cfg.get("global_calculations", {})
+    if user_email:
+        calcs = get_available_calcs(user_email, calcs)   # personal + shared with me
 
     for shelf_field, saved in (field_filters or {}).items():
         if not saved:
@@ -1416,6 +1439,11 @@ def _get_layout():
             html.Img(src="/assets/mtableauLogo2.png", height="40px", className="me-2"),
             dbc.NavbarBrand("", className="fw-bold fs-5 text-white"),
             html.Div([
+                (html.Span([html.I(className="bi bi-person-circle me-1"),
+                            getattr(current_user, "name", None) or current_user.email],
+                           id="signed-in-as", title=f"Signed in as {current_user.email}",
+                           className="text-white-50 me-3", style={"fontSize": "12px"})
+                 if IS_WEB else None),
                 (dbc.Button(html.I(className="bi bi-people-fill"), id="users-btn",
                            color="light", size="sm", className="me-2", title="Users")
                  if IS_WEB and current_user.is_admin else None),
@@ -3110,10 +3138,10 @@ def open_field_filter(filter_clicks, shelf_clicks,
     cfg     = load_config(user_email=user_email)
     ws_state = cfg.get("ws_state", {}).get(_ws_key(worksheet_id), {})
     is_received = bool(ws_state.get("shared_from"))
-    print(f"[FilterDebug] open_field_filter: ws={worksheet_id}, field={field}, user={user_email}, received={is_received}, current_values={current_values[:5] if len(current_values) > 5 else current_values}")
+    dlog(f"[FilterDebug] open_field_filter: ws={worksheet_id}, field={field}, user={user_email}, received={is_received}, current_values={current_values[:5] if len(current_values) > 5 else current_values}")
     calcs   = cfg.get("global_calculations", {})
     options = _get_options_for_field(field, current_fmt, calcs)
-    print(f"[FilterDebug] open_field_filter: options count={len(list(options)) if hasattr(options, '__len__') else '?'}")
+    dlog(f"[FilterDebug] open_field_filter: options count={len(list(options)) if hasattr(options, '__len__') else '?'}")
     is_date = field in DATE_FIELDS
     if is_date:
         fmt_options = [{"label": "None", "value": "none"}] + [
@@ -3164,7 +3192,7 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
     search_lower = (search or "").strip().lower()
     if triggered in ("perm-filter-clear-search-btn", "perm-field-context"):
         search_lower = ""
-    print(f"[FilterDebug] search_filter_options: ws={ws_id}, field={field}, "
+    dlog(f"[FilterDebug] search_filter_options: ws={ws_id}, field={field}, "
           f"cascade={cascade}, triggered={triggered}, user={user_email}, search={search_lower!r}")
 
     SPECIAL = ("__hint__", "__loading__", "__error__", "__none__")
@@ -3181,13 +3209,13 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
     if cascade and field not in calcs:
         ff    = _ws_field_filters_for(ws_id)
         where = _cascade_where_sql(ff, field)
-        print(f"[FilterDebug] cascade: other_filters={[k for k in ff if k.split('|')[-1] != field]}, "
+        dlog(f"[FilterDebug] cascade: other_filters={[k for k in ff if k.split('|')[-1] != field]}, "
               f"where={where!r}")
         if where:
             try:
                 base = _get_cascaded_options(field, fmt, where, reverse=reverse)
             except Exception as e:
-                print(f"[FilterDebug] cascade query failed for {field}: {e}")
+                dlog(f"[FilterDebug] cascade query failed for {field}: {e}")
                 base = None
     if base is None:
         base = [o for o in _get_options_for_field(field, fmt, calcs)
@@ -3203,7 +3231,7 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
         else:
             base = [o for o in base if search_lower in str(o.get("label", "")).lower()]
 
-    print(f"[FilterDebug] search final: sending {len(base)} items, "
+    dlog(f"[FilterDebug] search final: sending {len(base)} items, "
           f"first_20={[o.get('label') for o in base[:20]]}")
     if not base:
         msg = "No matches found" if search_lower else "No values found"
@@ -3270,7 +3298,7 @@ def execute_hc_search(pending, context_input, sort_order, cascade, field_filters
     if cascade:
         ff = _ws_field_filters_for(context_input.get("worksheet_id", ""))
         where_extra = _cascade_where_sql(ff, field)
-        print(f"[FilterDebug] hc cascade: field={field}, where={where_extra!r}")
+        dlog(f"[FilterDebug] hc cascade: field={field}, where={where_extra!r}")
 
     if "*" in search_lower or "?" in search_lower:
         search_like = search_lower.replace("*", "%").replace("?", "_")
@@ -3539,8 +3567,8 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
 
     # Debug: Print the order of all run-query-btn indices
     btn_indices = [item["id"]["index"] for item in ctx.inputs_list[0]]
-    print(f"[Query Debug] Pattern-matched button indices in order: {btn_indices}")
-    print(f"[Query Debug] Triggered button: {triggered['index']}, found at position ti={ti}")
+    dlog(f"[Query Debug] Pattern-matched button indices in order: {btn_indices}")
+    dlog(f"[Query Debug] Triggered button: {triggered['index']}, found at position ti={ti}")
 
     ws_key        = triggered["index"]
     rows          = rows_data[ti]          if rows_data          else []
@@ -3865,7 +3893,7 @@ def restore_saved_results(children, restore_complete):
     ws_state_all = cfg.get("ws_state", {})
     results      = []
     last_run_out = {}
-    print(f"[Restore Debug] Worksheets in order: {worksheets}")
+    dlog(f"[Restore Debug] Worksheets in order: {worksheets}")
     for w in worksheets:
         ws_key       = w.replace(" ", "_")
         results_dir  = get_results_dir(_user_email())
@@ -3970,7 +3998,7 @@ def restore_saved_results(children, restore_complete):
             result_types.append(f"{i}:Div")
         else:
             result_types.append(f"{i}:{type(r).__name__}")
-    print(f"[Restore Debug] Returning results list: {result_types}")
+    dlog(f"[Restore Debug] Returning results list: {result_types}")
     print(f"[Restore] ✓ Initial restore complete, will not run again")
     return results, last_run_out, True
 
@@ -4763,7 +4791,6 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
     prevent_initial_call=True
 )
 def handle_login(n_clicks, n_submit, email, password):
-    print(f"[Login] triggered, email={email}")
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not email or not password:
@@ -4789,7 +4816,6 @@ def handle_login(n_clicks, n_submit, email, password):
     prevent_initial_call=True
 )
 def handle_change_password(n_clicks, n_submit, new_pwd, confirm_pwd):
-    print(f"[Change Password] triggered")
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not new_pwd or not confirm_pwd:

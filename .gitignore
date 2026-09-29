@@ -1,30 +1,42 @@
-cd C:\mtableau\_internal
-@"
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.parquet
-*.duckdb
-*.duckdb.wal
-data/temp/
-data/results/*.parquet
-data/results/*.json
-data/results/*.summary.parquet
-*.log
-*.spec
-dist/
-build/
 venv/
+
+# Secrets and local config (never commit: repo is public)
 .env
 config.json
 users.json
 data/secret_key
+
+# Runtime data: per-user configs/results, shared registry, inboxes, extracts
+data/users/
+data/shared/
+data/results/*
+!data/results/.gitkeep
+data/data/
+data/temp/
 user_data/
-node_modules/
+*.parquet
+*.duckdb
+*.duckdb.wal
+*.json.tmp
+
+# Patches handed over for applying locally
+*.patch
+
+# Logs, exports
+*.log
 *.xlsx
+*.zip
+
+# PyInstaller build output and bundled runtime (desktop build)
+*.spec
+dist/
+build/
 *.dll
 *.pyd
-*.zip
 base_library.zip
 python3*.dll
 certifi/
@@ -56,4 +68,4 @@ webview/
 werkzeug-*/
 _tcl_data/
 _tk_data/
-"@ | Set-Content .gitignore
+node_modules/

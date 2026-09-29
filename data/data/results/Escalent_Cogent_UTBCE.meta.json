@@ -1,1 +1,0 @@
-{"rows": ["CLIENT_NAME", "USER_NAME", "USER_EMAIL"], "cols": ["TABRUN_MY"], "date_formats": {"TABRUN_MY": "month_abbrev"}, "measure": "COUNTD_USAGE_ID"}
