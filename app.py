@@ -2965,7 +2965,8 @@ def open_field_filter(filter_clicks, shelf_clicks,
     num_filters    = len(ws_filters_data) if ws_filters_data else 1
     ws_filters_out = [dash.no_update] * num_filters
     summary = _build_filter_summary(current_values, current_exclude)
-    cfg     = load_config()
+    user_email = _user_email()
+    cfg     = load_config(user_email=user_email)
     calcs   = cfg.get("global_calculations", {})
     options = _get_options_for_field(field, current_fmt, calcs)
     is_date = field in DATE_FIELDS
@@ -3009,7 +3010,8 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
 
     field    = context_input.get("field", "")
     fmt      = context_input.get("fmt", "none")
-    cfg      = load_config()
+    user_email = _user_email()
+    cfg      = load_config(user_email=user_email)
     calcs    = cfg.get("global_calculations", {})
     sort_order_data = sort_order if isinstance(sort_order, dict) else {}
     field = context_input.get("field", "")
