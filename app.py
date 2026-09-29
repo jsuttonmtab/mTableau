@@ -28,7 +28,7 @@ from components.worksheet import (
 )
 from utils.calculations import apply_calculation, validate_formula, FORMULA_FIELDS
 from utils.query_engine import extract_available, run_extract_query, build_duckdb_query
-from utils.config import load_config, save_config, get_base_dir
+from utils.config import load_config, save_config, get_base_dir, get_results_dir
 import threading
 import duckdb
 
@@ -70,6 +70,13 @@ app.title = "mTableau"
 IS_FROZEN = getattr(sys, "frozen", False)
 IS_WEB = not IS_FROZEN and os.environ.get("MTABLEAU_BASE") is not None
 print(f"[Auth] IS_WEB={IS_WEB}, IS_FROZEN={IS_FROZEN}, MTABLEAU_BASE={os.environ.get('MTABLEAU_BASE')}")
+
+# ── Per-user isolation helper ──────────────────────────────────────────────────
+def _user_email():
+    """Get current user email for per-user isolation, or None for global/desktop."""
+    if IS_WEB and HAS_AUTH and current_user.is_authenticated:
+        return current_user.email
+    return None
 
 # Default stub for desktop mode (will be replaced by Flask-Login in web mode)
 if not IS_WEB:
@@ -148,61 +155,61 @@ def _get_fmt(date_formats, shelf, field):
 # Config helpers
 # ─────────────────────────────────────────────
 
-def _save_worksheets(worksheets):
+def _save_worksheets(worksheets, user_email=None):
     try:
-        cfg = load_config()
+        cfg = load_config(user_email=user_email)
         cfg["worksheets"] = worksheets
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not save worksheets: {e}")
 
 
-def _rename_ws_state(old_name, new_name):
+def _rename_ws_state(old_name, new_name, user_email=None):
     try:
         old_key = old_name.replace(" ", "_")
         new_key = new_name.replace(" ", "_")
-        results_dir = get_base_dir() / "data" / "results"
+        results_dir = get_results_dir(user_email)
         for ext in [".parquet", ".meta.json"]:
             old_file = results_dir / f"{old_key}{ext}"
             new_file = results_dir / f"{new_key}{ext}"
             if old_file.exists():
                 old_file.rename(new_file)
-        cfg = load_config()
+        cfg = load_config(user_email=user_email)
         for key in ["ws_state", "ws_settings"]:
             store = cfg.get(key, {})
             if old_key in store:
                 store[new_key] = store.pop(old_key)
                 cfg[key] = store
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not rename ws state: {e}")
 
 
-def _duplicate_ws_state(src_name, dst_name):
+def _duplicate_ws_state(src_name, dst_name, user_email=None):
     try:
         import shutil, copy
         src_key = src_name.replace(" ", "_")
         dst_key = dst_name.replace(" ", "_")
-        results_dir = get_base_dir() / "data" / "results"
+        results_dir = get_results_dir(user_email)
         for ext in [".parquet", ".meta.json"]:
             src_file = results_dir / f"{src_key}{ext}"
             dst_file = results_dir / f"{dst_key}{ext}"
             if src_file.exists():
                 shutil.copy2(src_file, dst_file)
-        cfg = load_config()
+        cfg = load_config(user_email=user_email)
         for key in ["ws_state", "ws_settings"]:
             store = cfg.get(key, {})
             if src_key in store:
                 store[dst_key] = copy.deepcopy(store[src_key])
                 cfg[key] = store
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not duplicate ws state: {e}")
 
 
-def _save_ws_state(ws_key, rows, cols, filters, field_filters, date_formats, measure):
+def _save_ws_state(ws_key, rows, cols, filters, field_filters, date_formats, measure, user_email=None):
     try:
-        cfg = load_config()
+        cfg = load_config(user_email=user_email)
         if "ws_state" not in cfg:
             cfg["ws_state"] = {}
         cfg["ws_state"][ws_key] = {
@@ -210,14 +217,14 @@ def _save_ws_state(ws_key, rows, cols, filters, field_filters, date_formats, mea
             "field_filters": field_filters, "date_formats": date_formats,
             "measure": measure,
         }
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not save ws_state: {e}")
 
 
-def clear_saved_result(ws_key):
+def clear_saved_result(ws_key, user_email=None):
     try:
-        results_dir = get_base_dir() / "data" / "results"
+        results_dir = get_results_dir(user_email)
         for ext in [".parquet", ".meta.json", ".summary.parquet"]:
             p = results_dir / f"{ws_key}{ext}"
             if p.exists():
@@ -790,12 +797,12 @@ def _get_layout():
             return html.Div([dcc.Location(id="url", refresh=True), build_change_password_layout()])
 
     # Read worksheets fresh from config on each page load (not cached)
-    current_worksheets = load_config().get("worksheets", ["Worksheet 1"])
+    current_worksheets = load_config(user_email=_user_email()).get("worksheets", ["Worksheet 1"])
 
     return html.Div([
     dcc.Location(id="url", refresh=True),
     dcc.Store(id="worksheet-store",        data=current_worksheets, storage_type="memory"),
-    dcc.Store(id="global-calculations",    data=load_config().get("global_calculations", {})),
+    dcc.Store(id="global-calculations",    data=load_config(user_email=_user_email()).get("global_calculations", {})),
     dcc.Store(id="restore-complete",       data=False),
     dcc.Store(id="extract-running",        data=False),
     dcc.Store(id="rename-worksheet-input", data=""),
@@ -1943,6 +1950,7 @@ def toggle_modal(add, cancel, is_open):
 )
 def manage_worksheets(confirm_clicks, rename_value, new_name, worksheets, active_tab):
     triggered = ctx.triggered_id
+    user_email = _user_email()
     if triggered == "rename-worksheet-input" and rename_value:
         try:
             data       = json.loads(rename_value)
@@ -1953,8 +1961,8 @@ def manage_worksheets(confirm_clicks, rename_value, new_name, worksheets, active
             if new_name_r in worksheets:
                 new_name_r = f"{new_name_r} (2)"
             updated = [new_name_r if w == old_name else w for w in worksheets]
-            _rename_ws_state(old_name, new_name_r)
-            _save_worksheets(updated)
+            _rename_ws_state(old_name, new_name_r, user_email=user_email)
+            _save_worksheets(updated, user_email=user_email)
             return updated, dash.no_update, dash.no_update, dash.no_update
         except dash.exceptions.PreventUpdate:
             raise
@@ -1966,7 +1974,7 @@ def manage_worksheets(confirm_clicks, rename_value, new_name, worksheets, active
         if new_name in worksheets:
             new_name = f"{new_name} (2)"
         updated = worksheets + [new_name]
-        _save_worksheets(updated)
+        _save_worksheets(updated, user_email=user_email)
         return updated, "", False, new_name
     raise dash.exceptions.PreventUpdate
 
@@ -2004,8 +2012,9 @@ def duplicate_worksheet(payload, worksheets):
         counter += 1
         new_name = f"{src_name} ({counter})"
     updated = list(worksheets) + [new_name]
-    _duplicate_ws_state(src_name, new_name)
-    _save_worksheets(updated)
+    user_email = _user_email()
+    _duplicate_ws_state(src_name, new_name, user_email=user_email)
+    _save_worksheets(updated, user_email=user_email)
     return updated, new_name
 
 
@@ -2052,27 +2061,28 @@ def execute_delete_worksheet(confirm, cancel, name, worksheets, active_tab):
     if name not in (worksheets or []):
         raise dash.exceptions.PreventUpdate
 
+    user_email = _user_email()
     # Clean up files
     try:
         ws_key = name.replace(" ", "_")
-        results_dir = get_base_dir() / "data" / "results"
+        results_dir = get_results_dir(user_email)
         for ext in [".parquet", ".meta.json", ".summary.parquet"]:
             p = results_dir / f"{ws_key}{ext}"
             if p.exists():
                 p.unlink()
-        cfg = load_config()
+        cfg = load_config(user_email=user_email)
         for key in ["ws_state", "ws_settings"]:
             store = cfg.get(key, {})
             store.pop(ws_key, None)
             cfg[key] = store
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not clean up deleted worksheet: {e}")
 
     # If it's the last worksheet, replace with a blank one
     if len(worksheets) <= 1:
         updated = ["Worksheet 1"]
-        _save_worksheets(updated)
+        _save_worksheets(updated, user_email=user_email)
         return updated, "Worksheet 1", False
 
     updated = [w for w in worksheets if w != name]
@@ -4491,7 +4501,7 @@ def toggle_users_modal(n_clicks, is_open):
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not current_user.is_admin:
-        return False, ""
+        raise dash.exceptions.PreventUpdate
 
     return True, build_users_layout()
 
@@ -4509,7 +4519,7 @@ def handle_add_user(n_clicks, name, email, password, is_admin):
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not current_user.is_admin:
-        return "Not authorized", dash.no_update
+        raise dash.exceptions.PreventUpdate
 
     if not name or not email or not password:
         return "All fields required", dash.no_update
@@ -4546,7 +4556,7 @@ def handle_user_actions(reset_clicks, delete_clicks):
     if not HAS_AUTH:
         raise dash.exceptions.PreventUpdate
     if not current_user.is_admin:
-        return "Not authorized", dash.no_update
+        raise dash.exceptions.PreventUpdate
 
     triggered = ctx.triggered_id
     if not triggered:
