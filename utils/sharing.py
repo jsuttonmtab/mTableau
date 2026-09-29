@@ -46,21 +46,22 @@ def get_inbox_path(user_email):
     """Get path to user's inbox."""
     return get_user_dir(user_email) / "inbox.json"
 
-def add_to_inbox(user_email, worksheet_id, from_email, from_name, worksheet_name,
-                 worksheet_state, calcs):
+def add_to_inbox(user_email, share_id, from_email, from_name, worksheet_name,
+                 worksheet_state, calcs, source_worksheet=None):
     """Add a shared worksheet to user's inbox."""
     inbox = _atomic_read(get_inbox_path(user_email))
     if "worksheets" not in inbox:
         inbox["worksheets"] = []
 
     inbox["worksheets"].append({
-        "id": worksheet_id,
+        "share_id": share_id,
         "from_email": from_email,
         "from_name": from_name,
         "sent_at": time.time(),
         "worksheet_name": worksheet_name,
         "worksheet_state": worksheet_state,
-        "calcs": calcs
+        "calcs": calcs,
+        "source_worksheet": source_worksheet or worksheet_name
     })
     _atomic_write(get_inbox_path(user_email), inbox)
 
@@ -130,13 +131,27 @@ def get_available_calcs(user_email, personal_calcs):
     return available
 
 def merge_inbox_to_config(user_email, user_config):
-    """Merge inbox worksheets into user's config, handling collisions."""
+    """Merge inbox worksheets into user's config, handling collisions. Idempotent: checks share_id."""
+    from utils.share_registry import get_share_by_id
+
     inbox = get_inbox(user_email)
     if "worksheets" not in inbox or not inbox["worksheets"]:
         return user_config, []
 
     alerts = []
     for shared_ws in inbox["worksheets"]:
+        share_id = shared_ws.get("share_id")
+
+        # Skip if already merged (check if share_id exists in any worksheet's shared_from)
+        if share_id:
+            already_merged = False
+            for ws_key, ws_state in user_config.get("ws_state", {}).items():
+                if ws_state.get("shared_from", {}).get("share_id") == share_id:
+                    already_merged = True
+                    break
+            if already_merged:
+                continue
+
         from_name = shared_ws.get("from_name", shared_ws["from_email"])
         ws_name = shared_ws["worksheet_name"]
 
@@ -153,6 +168,14 @@ def merge_inbox_to_config(user_email, user_config):
             user_config["ws_state"] = {}
         ws_key = ws_name.replace(" ", "_")
         user_config["ws_state"][ws_key] = shared_ws["worksheet_state"]
+
+        # Mark with shared_from for tracking
+        if share_id:
+            user_config["ws_state"][ws_key]["shared_from"] = {
+                "share_id": share_id,
+                "owner_email": shared_ws.get("from_email"),
+                "source_worksheet": shared_ws.get("source_worksheet", shared_ws["worksheet_name"])
+            }
 
         # Merge calculations with collision handling
         if "global_calculations" not in user_config:
@@ -179,5 +202,4 @@ def merge_inbox_to_config(user_email, user_config):
 
         alerts.append(f"{from_name} shared worksheet '{shared_ws['worksheet_name']}'")
 
-    clear_inbox(user_email)
     return user_config, alerts

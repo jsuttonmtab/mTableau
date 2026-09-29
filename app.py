@@ -167,6 +167,8 @@ def _save_worksheets(worksheets, user_email=None):
 
 def _rename_ws_state(old_name, new_name, user_email=None):
     try:
+        from utils.share_registry import rename_source_worksheet
+
         old_key = old_name.replace(" ", "_")
         new_key = new_name.replace(" ", "_")
         results_dir = get_results_dir(user_email)
@@ -182,6 +184,10 @@ def _rename_ws_state(old_name, new_name, user_email=None):
                 store[new_key] = store.pop(old_key)
                 cfg[key] = store
         save_config(cfg, user_email=user_email)
+
+        # Update registry if user is owner of any shares of this worksheet
+        if user_email:
+            rename_source_worksheet(user_email, old_name, new_name)
     except Exception as e:
         print(f"Could not rename ws state: {e}")
 
@@ -202,9 +208,11 @@ def _duplicate_ws_state(src_name, dst_name, user_email=None):
             store = cfg.get(key, {})
             if src_key in store:
                 store[dst_key] = copy.deepcopy(store[src_key])
-                # Reset shared_log for duplicated worksheet
-                if key == "ws_state" and "shared_log" in store[dst_key]:
-                    store[dst_key]["shared_log"] = []
+                # Reset shared tracking for duplicated worksheet
+                if key == "ws_state":
+                    # Remove shared_log (legacy) and shared_from (new registry)
+                    store[dst_key].pop("shared_log", None)
+                    store[dst_key].pop("shared_from", None)
                 cfg[key] = store
         save_config(cfg, user_email=user_email)
     except Exception as e:
@@ -807,8 +815,10 @@ def _get_layout():
     # Merge inbox for web mode
     sharing_alerts = []
     if IS_WEB and user_email:
+        from utils.sharing import clear_inbox
         config, sharing_alerts = merge_inbox_to_config(user_email, config)
         save_config(config, user_email=user_email)
+        clear_inbox(user_email)
 
     current_worksheets = config.get("worksheets", ["Worksheet 1"])
 
@@ -1103,15 +1113,13 @@ def _get_layout():
     (dbc.Modal([
         dbc.ModalHeader(id="share-ws-header", children="Share Worksheet Copy"),
         dbc.ModalBody([
-            html.Div("Select users to share this worksheet copy with:", className="mb-3"),
-            dbc.Checkbox(id="share-ws-select-all", label="Select all", className="mb-2"),
-            dbc.Checklist(id="share-ws-users", className="mb-3"),
-            html.Div(id="share-ws-history", style={"fontSize": "12px", "color": "#666", "marginBottom": "12px"}),
+            html.Div(id="share-ws-has-access", className="mb-4"),
+            html.Div(id="share-ws-can-share-section", className="mb-3"),
             html.Div(id="share-ws-status", style={"fontSize": "12px", "marginBottom": "12px"}),
         ]),
         dbc.ModalFooter([
             dbc.Button("Cancel", id="share-ws-cancel-btn", color="secondary", className="me-2"),
-            dbc.Button("Share", id="share-ws-btn", color="primary"),
+            dbc.Button("Share", id="share-ws-btn", color="primary", disabled=True),
         ]),
     ], id="share-ws-modal", is_open=False, size="md") if IS_WEB else None),
 
@@ -1769,7 +1777,36 @@ def render_all_worksheets(worksheets, active_tab):
 def restore_tabs(worksheets, current_value):
     if not worksheets:
         worksheets = ["Worksheet 1"]
-    tabs   = [dcc.Tab(label=w, value=w) for w in worksheets]
+
+    user_email = _user_email()
+    cfg = load_config(user_email=user_email)
+    ws_state = cfg.get("ws_state", {})
+
+    tabs = []
+    for w in worksheets:
+        ws_key = w.replace(" ", "_")
+        ws_data = ws_state.get(ws_key, {})
+        shared_from = ws_data.get("shared_from", {})
+
+        # Build tab label with share icon if received
+        if shared_from and shared_from.get("owner_email"):
+            owner_email = shared_from["owner_email"]
+            from utils.auth import get_user
+            owner = get_user(owner_email)
+            owner_name = owner.name if owner else owner_email.split("@")[0]
+            label = html.Div([
+                w,
+                html.Span(
+                    " 🔗",
+                    title=f"Shared by {owner_name}",
+                    style={"marginLeft": "4px", "fontSize": "12px", "opacity": "0.8"}
+                )
+            ])
+        else:
+            label = w
+
+        tabs.append(dcc.Tab(label=label, value=w))
+
     active = current_value if current_value in worksheets else worksheets[0]
     return tabs, active
 
@@ -2114,6 +2151,8 @@ def execute_delete_worksheet(confirm, cancel, name, worksheets, active_tab):
     user_email = _user_email()
     # Clean up files
     try:
+        from utils.share_registry import delete_share_by_id, delete_shares_from_owner
+
         ws_key = name.replace(" ", "_")
         results_dir = get_results_dir(user_email)
         for ext in [".parquet", ".meta.json", ".summary.parquet"]:
@@ -2121,6 +2160,16 @@ def execute_delete_worksheet(confirm, cancel, name, worksheets, active_tab):
             if p.exists():
                 p.unlink()
         cfg = load_config(user_email=user_email)
+
+        # Check if this is a received share - delete registry record
+        ws_state = cfg.get("ws_state", {}).get(ws_key, {})
+        if ws_state.get("shared_from", {}).get("share_id"):
+            share_id = ws_state["shared_from"]["share_id"]
+            delete_share_by_id(share_id)
+        else:
+            # This is an owned source worksheet - delete all its shares
+            delete_shares_from_owner(user_email, name)
+
         for key in ["ws_state", "ws_settings"]:
             store = cfg.get(key, {})
             store.pop(ws_key, None)
@@ -4672,11 +4721,10 @@ def display_sharing_alerts(alerts):
 @app.callback(
     Output("share-ws-modal", "is_open"),
     Output("share-ws-header", "children"),
-    Output("share-ws-users", "options"),
-    Output("share-ws-users", "value"),
+    Output("share-ws-has-access", "children"),
+    Output("share-ws-can-share-section", "children"),
+    Output("share-ws-btn", "disabled"),
     Output("share-ws-status", "children"),
-    Output("share-ws-history", "children"),
-    Output("share-ws-select-all", "value"),
     Input("share-ws-payload", "data"),
     Input("share-ws-cancel-btn", "n_clicks"),
     prevent_initial_call=True
@@ -4685,35 +4733,58 @@ def open_share_modal(payload, cancel_clicks):
     triggered = ctx.triggered_id
 
     if triggered == "share-ws-cancel-btn":
-        return False, "Share Worksheet Copy", [], [], "", "", False
+        return False, "Share Worksheet Copy", "", "", True, ""
 
     if not payload or payload == "":
         raise dash.exceptions.PreventUpdate
 
-    from utils.auth import list_users
-    users = list_users()
+    from utils.auth import list_users, get_user
+    from utils.share_registry import get_shares_from
+    import datetime
+
     current_email = current_user.email if IS_WEB and current_user.is_authenticated else None
+    all_users = list_users()
 
-    options = [
-        {"label": f"{u['name']} ({u['email']})", "value": u['email']}
-        for u in users
-        if u['email'] != current_email
-    ]
+    # Get recipients who already have access via registry
+    shares = get_shares_from(current_email, payload)
+    recipients_with_access = {s["recipient_email"] for s in shares}
 
-    # Get share history for this worksheet
-    cfg = load_config(user_email=current_email)
-    ws_key = payload.replace(" ", "_")
-    ws_state = cfg.get("ws_state", {}).get(ws_key, {})
-    shared_log = ws_state.get("shared_log", [])
+    # Build "Has access" section
+    has_access_items = []
+    for share in shares:
+        dt = datetime.datetime.fromtimestamp(share["shared_at"]).strftime("%Y-%m-%d %H:%M")
+        has_access_items.append(html.Div(
+            f"✓ {share['recipient_name']} ({share['recipient_email']}) on {dt}",
+            style={"fontSize": "12px", "marginBottom": "4px"}
+        ))
 
-    history_text = ""
-    if shared_log:
-        history_items = [f"{log['to_name']} ({log['to_email']}) on {log.get('sent_at', '?')}" for log in shared_log]
-        history_text = f"Already sent to: {', '.join(history_items[:3])}"
-        if len(shared_log) > 3:
-            history_text += f" and {len(shared_log) - 3} more"
+    if has_access_items:
+        has_access_section = html.Div([
+            html.Div("Has access:", style={"fontWeight": "bold", "marginBottom": "8px"}),
+            html.Div(has_access_items)
+        ])
+    else:
+        has_access_section = html.Div("Not shared with anyone yet.", style={"color": "#666", "fontSize": "12px"})
 
-    return True, f"Share a copy of '{payload}'", options, [], "", history_text, False
+    # Build "Share with" section
+    available_users = [u for u in all_users if u["email"] != current_email and u["email"] not in recipients_with_access]
+
+    if not available_users:
+        can_share_section = html.Div("Everyone already has access.", style={"color": "#666", "fontSize": "12px"})
+        share_btn_disabled = True
+    else:
+        options = [
+            {"label": f"{u['name']} ({u['email']})", "value": u['email']}
+            for u in available_users
+        ]
+        can_share_section = html.Div([
+            html.Div("Share with:", style={"fontWeight": "bold", "marginBottom": "8px"}),
+            dbc.Checkbox(id="share-ws-select-all", label="Select all", className="mb-2"),
+            dbc.Checklist(id="share-ws-users", options=options, className="mb-2")
+        ])
+        share_btn_disabled = False
+
+    return True, f"Share a copy of '{payload}'", has_access_section, can_share_section, share_btn_disabled, ""
 
 
 @app.callback(
@@ -4727,19 +4798,18 @@ def open_share_modal(payload, cancel_clicks):
 def sync_select_all(select_all_checked, selected_users, all_options):
     triggered = ctx.triggered_id
 
+    if not all_options:
+        raise dash.exceptions.PreventUpdate
+
     if triggered == "share-ws-select-all":
         if select_all_checked:
-            # Check all options
             all_values = [opt['value'] for opt in all_options]
             return all_values, True
         else:
-            # Uncheck all
             return [], False
 
-    # User unchecked individual items
     if triggered == "share-ws-users":
         all_values = [opt['value'] for opt in all_options]
-        # Check select-all only if all users are selected
         is_all_selected = len(selected_users) == len(all_values) and set(selected_users) == set(all_values)
         return dash.no_update, is_all_selected
 
@@ -4748,7 +4818,8 @@ def sync_select_all(select_all_checked, selected_users, all_options):
 
 @app.callback(
     Output("share-ws-status", "children"),
-    Output("share-ws-modal", "is_open", allow_duplicate=True),
+    Output("share-ws-users", "value", allow_duplicate=True),
+    Output("share-ws-has-access", "children"),
     Input("share-ws-btn", "n_clicks"),
     State("share-ws-payload", "data"),
     State("share-ws-users", "value"),
@@ -4758,21 +4829,23 @@ def sync_select_all(select_all_checked, selected_users, all_options):
 )
 def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs):
     if not ws_name or not selected_users or not worksheets:
-        return "No users selected", dash.no_update
+        return "No users selected", dash.no_update, dash.no_update
 
     from utils.sharing import add_to_inbox
-    import uuid
+    from utils.share_registry import create_share, get_shares_from
+    from utils.auth import get_user, current_user
+    import datetime
 
     user_email = _user_email()
     if not user_email:
-        return "Error: not authenticated", dash.no_update
+        return "Error: not authenticated", dash.no_update, dash.no_update
 
     cfg = load_config(user_email=user_email)
     ws_key = ws_name.replace(" ", "_")
     ws_state = cfg.get("ws_state", {}).get(ws_key, {})
 
     if not ws_state:
-        return f"Error: worksheet '{ws_name}' not found", dash.no_update
+        return f"Error: worksheet '{ws_name}' not found", dash.no_update, dash.no_update
 
     # Collect referenced calcs
     referenced_calcs = {}
@@ -4785,49 +4858,60 @@ def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs)
                     referenced_calcs[calc_name] = calcs[calc_name]
 
     # Share with selected users
-    from utils.auth import get_user
-    import time
-
+    owner_name = current_user.name if IS_WEB else "User"
     shared_count = 0
+    shared_with_names = []
+
     for recipient_email in selected_users:
         try:
             recipient = get_user(recipient_email)
             recipient_name = recipient.name if recipient else recipient_email
 
-            add_to_inbox(
-                recipient_email,
-                str(uuid.uuid4()),
-                user_email,
-                current_user.name if IS_WEB else "User",
+            # Create share record in registry
+            share_id = create_share(
+                user_email, owner_name,
                 ws_name,
-                ws_state,
-                referenced_calcs
+                recipient_email, recipient_name,
+                ws_name  # recipient_worksheet initially same as source
             )
 
-            # Record in shared_log
-            if "ws_state" not in cfg:
-                cfg["ws_state"] = {}
-            if ws_key not in cfg["ws_state"]:
-                cfg["ws_state"][ws_key] = {}
-            if "shared_log" not in cfg["ws_state"][ws_key]:
-                cfg["ws_state"][ws_key]["shared_log"] = []
-
-            cfg["ws_state"][ws_key]["shared_log"].append({
-                "to_email": recipient_email,
-                "to_name": recipient_name,
-                "sent_at": time.time()
-            })
+            # Add to recipient's inbox with share_id
+            add_to_inbox(
+                recipient_email,
+                share_id,  # Use share_id as worksheet_id
+                user_email,
+                owner_name,
+                ws_name,
+                ws_state,
+                referenced_calcs,
+                source_worksheet=ws_name
+            )
 
             shared_count += 1
+            shared_with_names.append(recipient_name)
         except Exception as e:
             print(f"Error sharing with {recipient_email}: {e}")
 
-    # Save config with shared_log
-    if shared_count > 0:
-        save_config(cfg, user_email=user_email)
+    # Refresh "Has access" section
+    shares = get_shares_from(user_email, ws_name)
+    has_access_items = []
+    for share in shares:
+        dt = datetime.datetime.fromtimestamp(share["shared_at"]).strftime("%Y-%m-%d %H:%M")
+        has_access_items.append(html.Div(
+            f"✓ {share['recipient_name']} ({share['recipient_email']}) on {dt}",
+            style={"fontSize": "12px", "marginBottom": "4px"}
+        ))
 
-    status_msg = f"✅ Shared with {shared_count} user(s)" if shared_count > 0 else "❌ No users shared"
-    return status_msg, False
+    if has_access_items:
+        has_access_section = html.Div([
+            html.Div("Has access:", style={"fontWeight": "bold", "marginBottom": "8px"}),
+            html.Div(has_access_items)
+        ])
+    else:
+        has_access_section = html.Div("Not shared with anyone yet.", style={"color": "#666", "fontSize": "12px"})
+
+    status_msg = f"✅ Shared with {', '.join(shared_with_names)}" if shared_count > 0 else "❌ No users shared"
+    return status_msg, [], has_access_section
 
 
 if __name__ == "__main__":
