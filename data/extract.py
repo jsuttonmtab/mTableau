@@ -274,17 +274,27 @@ def build_extract(progress_callback=None):
         mysql_port = cfg.get("DB_PORT", "3306")
         mysql_db = cfg.get("DB_NAME", "")
 
+        def _sql_str(v):
+            return "'" + str(v).replace("'", "''") + "'"
+
         try:
             con.execute("INSTALL mysql; LOAD mysql;")
+            # Credentials go in a (temporary, in-memory) secret. Passing USER/PASSWORD
+            # as ATTACH options is rejected by current DuckDB MySQL extensions
+            # ("Unrecognized option for MySQL attach: user"), which silently pushed
+            # the build onto the memory-hungry pandas fallback.
             con.execute(f"""
-                ATTACH 'host={mysql_host} port={mysql_port} database={mysql_db} charset=utf8mb4'
-                AS mysql_db (
+                CREATE OR REPLACE SECRET mtab_mysql (
                     TYPE mysql,
-                    USER '{mysql_user}',
-                    PASSWORD '{mysql_pwd}',
-                    READ_ONLY true
+                    HOST {_sql_str(mysql_host)},
+                    PORT {int(mysql_port or 3306)},
+                    DATABASE {_sql_str(mysql_db)},
+                    USER {_sql_str(mysql_user)},
+                    PASSWORD {_sql_str(mysql_pwd)}
                 )
             """)
+            con.execute("ATTACH '' AS mysql_db (TYPE mysql, SECRET mtab_mysql, READ_ONLY)")
+            print("[Extract] MySQL extension attached")
         except Exception as e:
             print(f"[WARNING] MySQL extension not available, will use pandas fallback: {e}")
             mysql_attached = False
@@ -505,7 +515,7 @@ def build_extract(progress_callback=None):
             try:
                 con.execute(f"""
                     COPY (
-                        SELECT USAGE_ID, {_clean('QMNEM')} AS QMNEM
+                        SELECT USAGE_ID, TRIM(CAST(QMNEM AS VARCHAR)) AS QMNEM
                         FROM mysql_db.usageqmnem
                     ) TO '{str(temp_qmnem)}' (FORMAT PARQUET, COMPRESSION ZSTD)
                 """)
