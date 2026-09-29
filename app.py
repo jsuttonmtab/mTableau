@@ -822,7 +822,7 @@ def _get_layout():
                     ) if IS_WEB else None,
                 ], navbar=True),
             ], fluid=True, style={"display": "flex", "alignItems": "center"}),
-        ], color="light", light=True, className="border-bottom")
+        ], color="light", className="border-bottom")
     ], style={"display": "block" if IS_WEB else "none"}),
 
     html.Button(id="rename-trigger-btn",        style={"display": "none"}),
