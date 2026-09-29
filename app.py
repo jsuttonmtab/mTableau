@@ -1908,7 +1908,7 @@ def save_ws_settings(n_clicks, payload, col_total, row_total,
             results.append(dash.no_update)
             continue
         ws_cfg       = settings.get(wk, {})
-        results_dir  = get_base_dir() / "data" / "results"
+        results_dir  = get_results_dir(_user_email())
         parquet_path = results_dir / f"{wk}.parquet"
         meta_path    = results_dir / f"{wk}.meta.json"
         if not parquet_path.exists() or not meta_path.exists():
@@ -2084,7 +2084,7 @@ def restore_ws_state(worksheets):
     prevent_initial_call='initial_duplicate'
 )
 def restore_calculations(worksheets, panel_ids):
-    calcs = load_config().get("global_calculations", {})
+    calcs = load_config(user_email=_user_email()).get("global_calculations", {})
     if not calcs:
         raise dash.exceptions.PreventUpdate
     return calcs, [build_table_panel(pid["index"], calcs) for pid in panel_ids]
@@ -2096,7 +2096,7 @@ def restore_calculations(worksheets, panel_ids):
     prevent_initial_call='initial_duplicate'
 )
 def restore_ws_settings(worksheets):
-    return load_config().get("ws_settings", {})
+    return load_config(user_email=_user_email()).get("ws_settings", {})
 
 
 @app.callback(
@@ -2140,10 +2140,10 @@ def show_active_worksheet(active_tab, worksheets, current_children):
 
 def _build_saved_result(ws_key):
     """Build the HTML table for a single saved worksheet result. Skip large results."""
-    cfg = load_config()
+    cfg = load_config(user_email=_user_email())
     ws_settings  = cfg.get("ws_settings", {})
     ws_state_all = cfg.get("ws_state", {})
-    results_dir  = get_base_dir() / "data" / "results"
+    results_dir  = get_results_dir(_user_email())
     parquet_path = results_dir / f"{ws_key}.parquet"
     meta_path    = results_dir / f"{ws_key}.meta.json"
     print(f"[Lazy Load] ws_key={ws_key}, parquet_path={parquet_path}, exists={parquet_path.exists()}")
@@ -2608,7 +2608,7 @@ def remove_from_rows(n_clicks, current_rows):
     ws_index = next((i for i, item in enumerate(ctx.states_list[0])
                      if item["id"]["index"] == ws_key), 0)
     updated  = [f for f in (current_rows[ws_index] or []) if f != field]
-    clear_saved_result(ws_key)
+    clear_saved_result(ws_key, user_email=_user_email())
     return [updated if i == ws_index else dash.no_update
             for i in range(len(current_rows))]
 
@@ -2654,7 +2654,7 @@ def remove_from_cols(n_clicks, current_cols):
     ws_index = next((i for i, item in enumerate(ctx.states_list[0])
                      if item["id"]["index"] == ws_key), 0)
     updated  = [f for f in (current_cols[ws_index] or []) if f != field]
-    clear_saved_result(ws_key)
+    clear_saved_result(ws_key, user_email=_user_email())
     return [updated if i == ws_index else dash.no_update
             for i in range(len(current_cols))]
 
@@ -3234,7 +3234,7 @@ def update_options_on_fmt_change(new_fmt, context, sort_order):
     updated_context["fmt"] = new_fmt
 
     reverse = (sort_order == "desc")
-    cfg     = load_config()
+    cfg     = load_config(user_email=_user_email())
     calcs   = cfg.get("global_calculations", {})
     full    = list(_get_options_for_field(field, new_fmt, calcs))
     real    = [o for o in full if o.get("value") not in
@@ -3406,7 +3406,7 @@ def clear_search(is_open, context):
 
 def _build_cascade_where(field_filters, current_field):
     """Build DuckDB WHERE clauses from existing filters, excluding the current field."""
-    cfg = load_config()
+    cfg = load_config(user_email=_user_email())
     calcs = cfg.get("global_calculations", {})
 
     DATE_FILTER_FIELDS = {"TABRUN_MY", "ACTION_DATE", "TABRUN_TS"}
@@ -3640,7 +3640,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
     try:
         if use_duckdb:
             df = run_extract_query(sql)
-            results_dir = get_base_dir() / "data" / "results"
+            results_dir = get_results_dir(_user_email())
             results_dir.mkdir(parents=True, exist_ok=True)
 
             # ── Apply FIXED formulas BEFORE pivot (raw data has all columns) ──
@@ -3775,8 +3775,10 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         display_df = apply_row_blanking(df, rows)
         print(f"[Query] HTML payload: {len(df)} rows × {len(df.columns)} cols = {len(df) * len(df.columns)} cells")
         table      = build_html_table(df, display_df=display_df, rows=rows)
-        _save_ws_state(triggered["index"], rows, cols, filters,
-                       field_filters, date_formats, measure)
+        if not _is_readonly_ws(triggered["index"]):
+            _save_ws_state(triggered["index"], rows, cols, filters,
+                           field_filters, date_formats, measure,
+                           user_email=_user_email())
 
         # Build row count message with truncation notice if applicable
         msg = f"{full_row_count:,} rows returned"
@@ -3853,7 +3855,7 @@ def restore_saved_results(children, restore_complete):
     if not children:
         raise dash.exceptions.PreventUpdate
 
-    cfg = load_config()
+    cfg = load_config(user_email=_user_email())
     worksheets = cfg.get("worksheets", [])
     if not worksheets:
         raise dash.exceptions.PreventUpdate
@@ -3866,7 +3868,7 @@ def restore_saved_results(children, restore_complete):
     print(f"[Restore Debug] Worksheets in order: {worksheets}")
     for w in worksheets:
         ws_key       = w.replace(" ", "_")
-        results_dir  = get_base_dir() / "data" / "results"
+        results_dir  = get_results_dir(_user_email())
         parquet_path = results_dir / f"{ws_key}.parquet"
         meta_path    = results_dir / f"{ws_key}.meta.json"
         if not parquet_path.exists() or not meta_path.exists():
@@ -4006,7 +4008,7 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
     try:
         ws_key       = triggered["index"] if isinstance(triggered, dict) \
                        else active_tab.replace(" ", "_")
-        results_dir  = get_base_dir() / "data" / "results"
+        results_dir  = get_results_dir(_user_email())
         parquet_path = results_dir / f"{ws_key}.parquet"
         meta_path    = results_dir / f"{ws_key}.meta.json"
 
@@ -4147,7 +4149,7 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
     try:
         ws_key      = triggered["index"] if isinstance(triggered, dict) \
                       else active_tab.replace(" ", "_")
-        results_dir = get_base_dir() / "data" / "results"
+        results_dir = get_results_dir(_user_email())
         parquet_path = results_dir / f"{ws_key}.parquet"
         meta_path    = results_dir / f"{ws_key}.meta.json"
 
