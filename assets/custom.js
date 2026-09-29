@@ -63,9 +63,18 @@ setTimeout(function() {
         if (tab) {
             e.preventDefault(); e.stopPropagation(); hideTabMenu();
             targetTab = tab;
-            const x = Math.min(e.clientX, window.innerWidth  - 180);
-            const y = Math.min(e.clientY, window.innerHeight - 120);
-            menu.style.left = x + 'px'; menu.style.top = y + 'px'; menu.style.display = 'block';
+            menu.style.display = 'block';
+            const height = menu.offsetHeight;
+            const width = menu.offsetWidth;
+            let x = Math.min(e.clientX, window.innerWidth - width);
+            let y = Math.min(e.clientY, window.innerHeight - height);
+            if (e.clientY + height > window.innerHeight) {
+                y = Math.max(0, e.clientY - height);
+            }
+            if (e.clientX + width > window.innerWidth) {
+                x = Math.max(0, e.clientX - width);
+            }
+            menu.style.left = x + 'px'; menu.style.top = y + 'px';
             return;
         }
         if (badge) {
@@ -241,9 +250,18 @@ setTimeout(function() {
         _currentFmt  = badge.getAttribute('data-fmt') || 'none';
         const field  = badge.getAttribute('data-field') || '';
         buildBadgeMenu(DATE_FIELDS.has(field));
-        const x = Math.min(e.clientX, window.innerWidth  - 180);
-        const y = Math.min(e.clientY, window.innerHeight - 220);
-        badgeMenu.style.left = x + 'px'; badgeMenu.style.top = y + 'px'; badgeMenu.style.display = 'block';
+        badgeMenu.style.display = 'block';
+        const height = badgeMenu.offsetHeight;
+        const width = badgeMenu.offsetWidth;
+        let x = Math.min(e.clientX, window.innerWidth - width);
+        let y = Math.min(e.clientY, window.innerHeight - height);
+        if (e.clientY + height > window.innerHeight) {
+            y = Math.max(0, e.clientY - height);
+        }
+        if (e.clientX + width > window.innerWidth) {
+            x = Math.max(0, e.clientX - width);
+        }
+        badgeMenu.style.left = x + 'px'; badgeMenu.style.top = y + 'px';
     };
 
     function makeBadgeItem(html, hoverColor, onClick) {
@@ -301,11 +319,14 @@ setTimeout(function() {
             });
             fmtMenu.appendChild(item);
         });
+        fmtMenu.style.display = 'block';
         const r = badgeMenu.getBoundingClientRect();
+        const fmtHeight = fmtMenu.offsetHeight;
+        const fmtWidth = fmtMenu.offsetWidth;
         let x = r.right + 2, y = r.top + fmtItem.offsetTop;
-        if (x + 210 > window.innerWidth)  x = r.left - 210;
-        if (y + 220 > window.innerHeight) y = window.innerHeight - 230;
-        fmtMenu.style.left = x + 'px'; fmtMenu.style.top = y + 'px'; fmtMenu.style.display = 'block';
+        if (x + fmtWidth > window.innerWidth)  x = r.left - fmtWidth;
+        if (y + fmtHeight > window.innerHeight) y = Math.max(0, window.innerHeight - fmtHeight);
+        fmtMenu.style.left = x + 'px'; fmtMenu.style.top = y + 'px';
     }
 
     fmtMenu.addEventListener('mouseenter', function() { clearTimeout(_fmtMenuTimer); });
