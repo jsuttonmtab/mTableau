@@ -3044,19 +3044,36 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
 
     if triggered == "perm-filter-cascade":
         print(f"[FilterDebug] cascade triggered: cascade={cascade}, field={field}, search={search}")
-        # Log other active filters for this worksheet
-        ws_index = context_input.get("worksheet_id", "")
-        if field_filters_data and ws_index < len(field_filters_data):
-            other_filters = {k: v for k, v in field_filters_data[ws_index].items() if field not in k}
-            print(f"[FilterDebug] cascade: other_filters={list(other_filters.keys())}, source=ws-field-filters-store")
+        # Get other active filters for this worksheet
+        ws_id = context_input.get("worksheet_id", "")
+        ws_idx = 0
+        try:
+            cfg_ws = load_config(user_email=user_email).get("worksheets", [])
+            for i, w in enumerate(cfg_ws):
+                if w.replace(" ", "_") == ws_id:
+                    ws_idx = i
+                    break
+        except Exception:
+            pass
+
+        other_filters = {}
+        if field_filters_data and ws_idx < len(field_filters_data):
+            other_filters = {k: v for k, v in field_filters_data[ws_idx].items() if field not in k}
+        print(f"[FilterDebug] cascade: other_filters={list(other_filters.keys())}, source=ws-field-filters-store")
+
+        # Apply cascade filtering (same as normal path, just note cascade is on)
         if field in HIGH_CARDINALITY_FIELDS:
             search_lower = (search or "").strip().lower()
             if len(search_lower) >= 3:
                 search_lower = search_lower.replace("'", "''")
+                print(f"[FilterDebug] cascade: HIGH_CARDINALITY, deferring to execute_hc_search with cascade=True")
                 return [], search_lower
+            print(f"[FilterDebug] cascade result: HIGH_CARDINALITY, no search, empty list")
             return [], ""
+
+        # Normal cardinality with cascade - just return full sorted for now (cascade filtering TODO)
         full = get_full_sorted()
-        print(f"[FilterDebug] cascade result: field={field}, options_count={len(full)}")
+        print(f"[FilterDebug] cascade result: field={field}, options_count={len(full)}, cascade_filters={len(other_filters)}")
         return full, ""
 
     if triggered == "perm-filter-sort":
