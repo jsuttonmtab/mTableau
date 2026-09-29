@@ -703,10 +703,12 @@ def _render_cols_items(cols, field_filters, date_formats, worksheet_id):
 # Layout
 # ─────────────────────────────────────────────
 
-_initial_worksheets = load_config().get("worksheets", ["Worksheet 1"])
+def _get_layout():
+    # Read worksheets fresh from config on each page load (not cached)
+    current_worksheets = load_config().get("worksheets", ["Worksheet 1"])
 
-app.layout = html.Div([
-    dcc.Store(id="worksheet-store",        data=_initial_worksheets, storage_type="memory"),
+    return html.Div([
+    dcc.Store(id="worksheet-store",        data=current_worksheets, storage_type="memory"),
     dcc.Store(id="global-calculations",    data=load_config().get("global_calculations", {})),
     dcc.Store(id="restore-complete",       data=False),
     dcc.Store(id="extract-running",        data=False),
@@ -1103,8 +1105,8 @@ app.layout = html.Div([
         html.Div([
             dcc.Tabs(
                 id="worksheet-tabs",
-                value=_initial_worksheets[0],
-                children=[dcc.Tab(label=w, value=w) for w in _initial_worksheets],
+                value=current_worksheets[0],
+                children=[dcc.Tab(label=w, value=w) for w in current_worksheets],
                 className="custom-tabs",
                 style={"height": "34px"},
             ),
@@ -1119,6 +1121,9 @@ app.layout = html.Div([
 
 ], style={"display": "flex", "flexDirection": "column",
           "height": "100vh", "overflow": "hidden"})
+    )  # End of _get_layout function
+
+app.layout = _get_layout  # Set to function, not result - Dash will call it for each page load
 
 @app.callback(
     Output("perm-filter-sort",     "data"),
