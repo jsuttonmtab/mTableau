@@ -816,40 +816,6 @@ def _get_layout():
     dcc.Download(id="download-data"),
     dcc.Download(id="download-crosstab"),
 
-    # ── Auth buttons (web mode only) ────────────────────────────
-    html.Div([
-        dbc.Navbar([
-            dbc.Container([
-                html.Div(style={"flex": "1"}),
-                dbc.Nav([
-                    dbc.NavItem(
-                        dbc.Button(
-                            [html.I(className="bi bi-people-fill me-1"), "Users"],
-                            id="users-btn",
-                            color="outline-secondary",
-                            size="sm",
-                            className="me-2",
-                            style={"display": "none" if not IS_WEB else "block",
-                                   "fontSize": "11px"}
-                        )
-                    ) if IS_WEB else None,
-                    dbc.NavItem(
-                        dbc.Button(
-                            [html.I(className="bi bi-box-arrow-right me-1"), "Logout"],
-                            id="logout-btn",
-                            color="outline-danger",
-                            size="sm",
-                            href=app.get_relative_path("/logout"),
-                            external_link=True,
-                            style={"display": "none" if not IS_WEB else "block",
-                                   "fontSize": "11px"}
-                        )
-                    ) if IS_WEB else None,
-                ], navbar=True),
-            ], fluid=True, style={"display": "flex", "alignItems": "center"}),
-        ], color="light", className="border-bottom")
-    ], style={"display": "block" if IS_WEB else "none"}),
-
     html.Button(id="rename-trigger-btn",        style={"display": "none"}),
     html.Button(id="drop-trigger-btn",          style={"display": "none"}),
     html.Button(id="dupe-trigger-btn",          style={"display": "none"}),
@@ -1099,6 +1065,11 @@ def _get_layout():
         dbc.ModalBody(id="settings-modal-body", style={"padding": "0"}),
     ], id="settings-modal", is_open=False, size="xl", scrollable=True),
 
+    (dbc.Modal([
+        dbc.ModalHeader("Users"),
+        dbc.ModalBody(id="users-modal-body", style={"padding": "0"}),
+    ], id="users-modal", is_open=False, size="lg") if IS_WEB and current_user.is_admin else None),
+
     dbc.Modal([
         dbc.ModalBody([
             html.Div([
@@ -1183,9 +1154,20 @@ def _get_layout():
         dbc.Container([
             html.Img(src="/assets/mtableauLogo2.png", height="40px", className="me-2"),
             dbc.NavbarBrand("", className="fw-bold fs-5 text-white"),
-            dbc.Button(html.I(className="bi bi-gear-fill"),
-                      id="settings-btn", color="light", size="sm",
-                      className="ms-auto", title="Settings"),
+            html.Div([
+                (dbc.Button(html.I(className="bi bi-people-fill"), id="users-btn",
+                           color="light", size="sm", className="me-2", title="Users")
+                 if IS_WEB and current_user.is_admin else None),
+                dbc.Button(html.I(className="bi bi-box-arrow-right"),
+                          id="logout-btn", color="light", size="sm",
+                          href=app.get_relative_path("/logout") if IS_WEB else None,
+                          external_link=True,
+                          style={"display": "block" if IS_WEB else "none"},
+                          className="me-2", title="Logout"),
+                dbc.Button(html.I(className="bi bi-gear-fill"),
+                          id="settings-btn", color="light", size="sm",
+                          title="Settings"),
+            ], style={"display": "flex", "alignItems": "center", "marginLeft": "auto"}, className="ms-auto"),
         ], fluid=True),
         color="dark",
         style={"backgroundColor": "#0f1f3d"}, className="mb-0 py-1"
@@ -4498,10 +4480,10 @@ def handle_change_password(n_clicks, n_submit, new_pwd, confirm_pwd):
 
 
 @app.callback(
-    Output("settings-modal", "is_open"),
-    Output("settings-modal-body", "children"),
+    Output("users-modal", "is_open"),
+    Output("users-modal-body", "children"),
     Input("users-btn", "n_clicks"),
-    State("settings-modal", "is_open"),
+    State("users-modal", "is_open"),
     prevent_initial_call=True
 )
 def toggle_users_modal(n_clicks, is_open):
