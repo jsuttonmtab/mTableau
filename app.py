@@ -909,6 +909,7 @@ def _get_layout():
     dcc.Store(id="sql-display-payload",    data=""),
     dcc.Store(id="share-ws-payload",       data=""),
     dcc.Store(id="shared-ws-names",        data=shared_ws_names),
+    dcc.Store(id="shared-ws-names-sink",   data=0),
     dcc.Download(id="download-data"),
     dcc.Download(id="download-crosstab"),
 
@@ -1475,11 +1476,10 @@ app.clientside_callback(
 app.clientside_callback(
     """function(shared_names) {
         window._sharedWsNames = shared_names || [];
-        return window.dash_clientside.no_update;
+        return Date.now();
     }""",
-    Output("shared-ws-names", "data", allow_duplicate=True),
+    Output("shared-ws-names-sink", "data"),
     Input("shared-ws-names", "data"),
-    prevent_initial_call=False
 )
 
 app.clientside_callback(
