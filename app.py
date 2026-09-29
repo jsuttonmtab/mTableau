@@ -2,6 +2,7 @@ import time
 import functools
 import sys
 import os
+import secrets
 from pathlib import Path
 import dash
 from dash import Dash, html, dcc, Input, Output, State, ctx, ALL
@@ -95,8 +96,18 @@ if IS_WEB:
     if HAS_AUTH:
         init_auth()
 
-    # Set Flask secret key
-    secret_key = os.environ.get("SECRET_KEY", "mtableau-dev-key-change-in-production")
+    # Set Flask secret key from environment or file
+    if "SECRET_KEY" in os.environ:
+        secret_key = os.environ["SECRET_KEY"]
+    else:
+        secret_key_file = Path(get_base_dir()) / "data" / "secret_key"
+        if secret_key_file.exists():
+            secret_key = secret_key_file.read_text().strip()
+        else:
+            secret_key = secrets.token_hex(32)
+            secret_key_file.parent.mkdir(parents=True, exist_ok=True)
+            secret_key_file.write_text(secret_key)
+            print(f"[Auth] Generated new secret key at {secret_key_file}")
     app.server.secret_key = secret_key
 
     # Initialize Flask-Login
@@ -828,6 +839,8 @@ def _get_layout():
                             id="logout-btn",
                             color="outline-danger",
                             size="sm",
+                            href=app.get_relative_path("/logout"),
+                            external_link=True,
                             style={"display": "none" if not IS_WEB else "block",
                                    "fontSize": "11px"}
                         )
@@ -4483,22 +4496,10 @@ def handle_change_password(n_clicks, n_submit, new_pwd, confirm_pwd):
         print(f"[Change Password] FAIL: Could not save password")
         return "Error changing password", dash.no_update
 
-@app.callback(
-    Output("url", "pathname", allow_duplicate=True),
-    Input("logout-btn", "n_clicks"),
-    prevent_initial_call=True
-)
-def handle_logout(n_clicks):
-    print("[Logout] triggered")
-    if not HAS_AUTH:
-        raise dash.exceptions.PreventUpdate
-    logout_user()
-    # Reload to "/" - _get_layout will show login page since current_user.is_authenticated=False
-    return "/"
 
 @app.callback(
     Output("settings-modal", "is_open"),
-    Output("settings-modal-content", "children"),
+    Output("settings-modal-body", "children"),
     Input("users-btn", "n_clicks"),
     State("settings-modal", "is_open"),
     prevent_initial_call=True

@@ -18,6 +18,7 @@ venv/
 .env
 config.json
 users.json
+data/secret_key
 user_data/
 node_modules/
 *.xlsx
