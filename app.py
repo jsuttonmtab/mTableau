@@ -1357,7 +1357,6 @@ app.layout = _get_layout  # Set to function, not result - Dash will call it for 
     Input("perm-filter-sort-btn",  "n_clicks"),
     State("perm-filter-sort",      "data"),
     State("perm-field-context",    "data"),
-    prevent_initial_call=True
 )
 def toggle_filter_sort(n_clicks, sort_data, context):
     sort_data = sort_data if isinstance(sort_data, dict) else {}
@@ -1376,7 +1375,6 @@ def toggle_filter_sort(n_clicks, sort_data, context):
     Input("perm-field-filter-modal",     "is_open"),
     State("perm-filter-search",          "value"),
     State("perm-field-context",          "data"),
-    prevent_initial_call=True
 )
 def toggle_loading_msg(options, is_open, search, context):
     hidden     = {"display": "none"}
@@ -1534,7 +1532,6 @@ def cancel_query(n_clicks):
     Input("sql-display-payload",    "data"),
     Input("sql-display-close-btn",  "n_clicks"),
     State("ws-last-sql",            "data"),
-    prevent_initial_call=True
 )
 def display_sql(payload, close_clicks, ws_last_sql):
     triggered = ctx.triggered_id
@@ -1575,7 +1572,6 @@ def select_all_none(select_all, select_none, options):
     Input("range-cancel-btn",    "n_clicks"),
     Input("range-apply-btn",     "n_clicks"),
     State("perm-field-filter-checklist", "options"),
-    prevent_initial_call=True
 )
 def toggle_range_modal(select_clicks, cancel_clicks, apply_clicks, options):
     triggered = ctx.triggered_id
@@ -1629,7 +1625,6 @@ def apply_range_selection(n_clicks, from_val, to_val, options, current_values):
     Input("selected-values-close",    "n_clicks"),
     State("perm-field-filter-checklist", "value"),
     State("perm-field-context",          "data"),
-    prevent_initial_call=True
 )
 def toggle_selected_values(open_clicks, close_clicks, current_values, context):
     triggered = ctx.triggered_id
@@ -1712,7 +1707,6 @@ def remove_selected_value(n_clicks, current_values, context):
     Input("ws-settings-cancel-btn", "n_clicks"),
     Input("ws-settings-apply-btn",  "n_clicks"),
     State("ws-settings-store",      "data"),
-    prevent_initial_call=True
 )
 def toggle_ws_settings(payload, cancel, apply_clicks, ws_settings):
     triggered = ctx.triggered_id
@@ -2166,7 +2160,6 @@ def show_delete_btn(active_tab, worksheets):
 @app.callback(
     Output("ws-readonly-modal", "is_open"),
     Input("ws-readonly-close-btn", "n_clicks"),
-    prevent_initial_call=True
 )
 def close_readonly_modal(n_clicks):
     return False
@@ -2279,7 +2272,6 @@ def duplicate_worksheet(payload, worksheets):
     Output("delete-ws-confirm-body",  "children"),
     Output("delete-ws-pending",       "data"),
     Input("delete-ws-payload",        "data"),
-    prevent_initial_call=True
 )
 def confirm_delete_worksheet(payload):
     if not payload:
@@ -2432,7 +2424,6 @@ function(rows_list, cols_list, field_filters_list, measure_list, last_run, activ
     Output({"type": "ws-rows", "index": ALL}, "data"),
     Input({"type": "add-rows-btn", "index": ALL}, "n_clicks"),
     State({"type": "ws-rows",      "index": ALL}, "data"),
-    prevent_initial_call=True
 )
 def add_to_rows(n_clicks, current_rows):
     if not any(n for n in n_clicks if n):
@@ -2478,7 +2469,6 @@ def remove_from_rows(n_clicks, current_rows):
     Output({"type": "ws-cols", "index": ALL}, "data"),
     Input({"type": "add-cols-btn", "index": ALL}, "n_clicks"),
     State({"type": "ws-cols",      "index": ALL}, "data"),
-    prevent_initial_call=True
 )
 def add_to_cols(n_clicks, current_cols):
     if not any(n for n in n_clicks if n):
@@ -2764,7 +2754,6 @@ def remove_from_filters(n_clicks, current_filters, current_field_filters):
 @app.callback(
     Output({"type": "ws-measure", "index": ALL}, "data"),
     Input({"type": "measure-select", "index": ALL}, "value"),
-    prevent_initial_call=True
 )
 def save_measure(values):
     triggered = ctx.triggered_id
@@ -2902,7 +2891,6 @@ def handle_badge_context(payload, field_filters_data, date_formats_data, ws_filt
     State({"type": "ws-date-formats",  "index": ALL}, "data"),
     State({"type": "ws-filters",       "index": ALL}, "data"),
     State("perm-filter-sort",      "data"),
-    prevent_initial_call=True
 )
 def open_field_filter(filter_clicks, shelf_clicks,
                       field_filters_data, date_formats_data, ws_filters_data, sort_data):
@@ -3001,7 +2989,6 @@ def open_field_filter(filter_clicks, shelf_clicks,
     State("perm-filter-search",           "value"),
     State("perm-filter-sort",             "data"),
     State({"type": "ws-field-filters", "index": ALL}, "data"),
-    prevent_initial_call=True
 )
 def search_filter_options(search_clicks, clear_clicks, sort_data,
                           context_input, cascade, search, sort_order,
@@ -3238,7 +3225,6 @@ def execute_hc_search(search_lower, context_input, sort_order, cascade, field_fi
     Input("perm-field-filter-checklist", "options"),
     State("perm-field-context",          "data"),
     State("perm-filter-search",          "value"),
-    prevent_initial_call=True
 )
 def update_search_status(options, context, search):
     if not options:
@@ -3344,7 +3330,6 @@ def apply_field_filter(apply_clicks, clear_clicks, checklist_values,
     Output("perm-filter-search", "value"),
     Input("perm-field-filter-modal", "is_open"),
     Input("perm-field-context",      "data"),
-    prevent_initial_call=True
 )
 def clear_search(is_open, context):
     return ""
@@ -3933,7 +3918,6 @@ def restore_saved_results(children, restore_complete):
     State("global-calculations", "data"),
     State("ws-settings-store",   "data"),
     State("worksheet-tabs",      "value"),
-    prevent_initial_call=True
 )
 def export_data(n_clicks, rows_data, cols_data, field_filters_data,
                 date_formats_data, measure_data, global_calcs, ws_settings, active_tab):
@@ -4071,7 +4055,6 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
     State("global-calculations", "data"),
     State("ws-settings-store",   "data"),
     State("worksheet-tabs",      "value"),
-    prevent_initial_call=True
 )
 def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
                     date_formats_data, measure_data, global_calcs, ws_settings, active_tab):
@@ -4288,7 +4271,6 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
     Output("settings-modal-body", "children"),
     Input("settings-btn",         "n_clicks"),
     State("settings-modal",       "is_open"),
-    prevent_initial_call=True
 )
 def toggle_settings(n_clicks, is_open):
     if n_clicks:
@@ -4300,7 +4282,6 @@ def toggle_settings(n_clicks, is_open):
     Output("refresh-extract-btn", "n_clicks"),
     Input("settings-refresh-btn", "n_clicks"),
     State("refresh-extract-btn",  "n_clicks"),
-    prevent_initial_call=True
 )
 def relay_refresh(n, current):
     if not n:
@@ -4312,7 +4293,6 @@ def relay_refresh(n, current):
     Output("cancel-extract-btn", "n_clicks"),
     Input("settings-cancel-btn", "n_clicks"),
     State("cancel-extract-btn",  "n_clicks"),
-    prevent_initial_call=True
 )
 def relay_cancel(n, current):
     if not n:
@@ -4324,7 +4304,6 @@ def relay_cancel(n, current):
     Output("extract-progress-display", "children"),
     Input("extract-interval",          "n_intervals"),
     Input("refresh-extract-btn",       "n_clicks"),
-    prevent_initial_call=True
 )
 def update_settings_progress(n_intervals, n_clicks):
     if not extract_messages:
@@ -4340,7 +4319,6 @@ def update_settings_progress(n_intervals, n_clicks):
     Output("settings-cancel-btn", "style"),
     Input("extract-interval",     "n_intervals"),
     Input("refresh-extract-btn",  "n_clicks"),
-    prevent_initial_call=True
 )
 def toggle_settings_cancel(n_intervals, n_clicks):
     if not extract_messages:
@@ -4359,7 +4337,6 @@ def toggle_settings_cancel(n_intervals, n_clicks):
     State("cfg-user",        "value"),
     State("cfg-password",    "value"),
     State("cfg-upload-path", "value"),
-    prevent_initial_call=True
 )
 def save_config_callback(n_clicks, host, port, dbname, user, password, upload_path):
     if not n_clicks:
@@ -4400,7 +4377,6 @@ extract_start_time = None
     Output("cancel-extract-btn",              "style"),
     Input("refresh-extract-btn", "n_clicks"),
     Input("extract-interval",    "n_intervals"),
-    prevent_initial_call=True
 )
 def handle_extract(n_clicks, n_intervals):
     global extract_messages, extract_pct, extract_start_time
@@ -4456,7 +4432,6 @@ def handle_extract(n_clicks, n_intervals):
     Output("extract-clock-interval", "disabled"),
     Input("extract-clock-interval",  "n_intervals"),
     Input("refresh-extract-btn",     "n_clicks"),
-    prevent_initial_call=True
 )
 def update_clock(n_intervals, n_clicks):
     triggered = ctx.triggered_id
@@ -4504,7 +4479,6 @@ def cancel_extract(n_clicks):
     Input("calc-cancel-btn", "n_clicks"),
     Input("calc-save-btn",   "n_clicks"),
     State("calc-modal",      "is_open"),
-    prevent_initial_call=True
 )
 def toggle_calc_modal(open_clicks, cancel, save, is_open):
     triggered = ctx.triggered_id
@@ -4760,7 +4734,6 @@ def handle_change_password(n_clicks, n_submit, new_pwd, confirm_pwd):
     Output("users-modal-body", "children"),
     Input("users-btn", "n_clicks"),
     State("users-modal", "is_open"),
-    prevent_initial_call=True
 )
 def toggle_users_modal(n_clicks, is_open):
     print("[Users] triggered")
@@ -4779,7 +4752,6 @@ def toggle_users_modal(n_clicks, is_open):
     State("new-user-email", "value"),
     State("new-user-password", "value"),
     State("new-user-admin", "value"),
-    prevent_initial_call=True
 )
 def handle_add_user(n_clicks, name, email, password, is_admin):
     if not HAS_AUTH:
@@ -4894,7 +4866,6 @@ def display_sharing_alerts(alerts):
     Output("share-ws-status", "children"),
     Input("share-ws-payload", "data"),
     Input("share-ws-cancel-btn", "n_clicks"),
-    prevent_initial_call=True
 )
 def open_share_modal(payload, cancel_clicks):
     triggered = ctx.triggered_id
