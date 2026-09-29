@@ -137,14 +137,12 @@ def delete_user(email):
     return True
 
 def list_users():
-    """List all users."""
+    """List all users (email and name only, safe for sharing with logged-in users)."""
     users = _load_users()
     return [
         {
             "email": email,
             "name": data.get("name", email),
-            "is_admin": data.get("is_admin", False),
-            "must_change_password": data.get("must_change_password", False)
         }
         for email, data in users.items()
     ]

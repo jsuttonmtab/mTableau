@@ -29,6 +29,7 @@ from components.worksheet import (
 from utils.calculations import apply_calculation, validate_formula, FORMULA_FIELDS
 from utils.query_engine import extract_available, run_extract_query, build_duckdb_query
 from utils.config import load_config, save_config, get_base_dir, get_results_dir
+from utils.sharing import merge_inbox_to_config, get_available_calcs
 import threading
 import duckdb
 
@@ -797,12 +798,29 @@ def _get_layout():
             return html.Div([dcc.Location(id="url", refresh=True), build_change_password_layout()])
 
     # Read worksheets fresh from config on each page load (not cached)
-    current_worksheets = load_config(user_email=_user_email()).get("worksheets", ["Worksheet 1"])
+    user_email = _user_email()
+    config = load_config(user_email=user_email)
+
+    # Merge inbox for web mode
+    sharing_alerts = []
+    if IS_WEB and user_email:
+        config, sharing_alerts = merge_inbox_to_config(user_email, config)
+        save_config(config, user_email=user_email)
+
+    current_worksheets = config.get("worksheets", ["Worksheet 1"])
+
+    # Get merged calculations (personal + shared)
+    personal_calcs = config.get("global_calculations", {})
+    if IS_WEB and user_email:
+        merged_calcs = get_available_calcs(user_email, personal_calcs)
+    else:
+        merged_calcs = personal_calcs
 
     return html.Div([
     dcc.Location(id="url", refresh=True),
     dcc.Store(id="worksheet-store",        data=current_worksheets, storage_type="memory"),
-    dcc.Store(id="global-calculations",    data=load_config(user_email=_user_email()).get("global_calculations", {})),
+    dcc.Store(id="global-calculations",    data=merged_calcs),
+    dcc.Store(id="sharing-alerts",         data=sharing_alerts),
     dcc.Store(id="restore-complete",       data=False),
     dcc.Store(id="extract-running",        data=False),
     dcc.Store(id="rename-worksheet-input", data=""),
@@ -1197,6 +1215,11 @@ def _get_layout():
                        "backgroundColor": "#f0f4ff",
                        "borderBottom": "1px solid #dee2e6"})
     ]),
+
+    dbc.Alert(id="sharing-alerts-container", is_open=False, dismissable=True,
+             style={"display": "none" if not IS_WEB else "block", "marginBottom": "0",
+                    "borderRadius": "0", "borderLeft": "none", "borderRight": "none",
+                    "borderTop": "none"}),
 
     dcc.Interval(id="extract-clock-interval", interval=30000, disabled=True),
     dcc.Interval(id="extract-interval",       interval=2000,  disabled=True),
@@ -4593,6 +4616,27 @@ def handle_user_actions(reset_clicks, delete_clicks):
             ], style={"whiteSpace": "nowrap"}),
         ]))
     return msg, rows
+
+
+# ─────────────────────────────────────────────
+# Sharing alerts
+# ─────────────────────────────────────────────
+
+@app.callback(
+    Output("sharing-alerts-container", "children"),
+    Output("sharing-alerts-container", "is_open"),
+    Input("sharing-alerts", "data"),
+)
+def display_sharing_alerts(alerts):
+    if not alerts or not IS_WEB:
+        return [], False
+
+    alert_text = html.Ul([
+        html.Li(alert, style={"fontSize": "13px"})
+        for alert in alerts
+    ])
+    return alert_text, True
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8050, debug=True)
