@@ -358,6 +358,129 @@ def _get_filter_options_for_field(field, fmt="none"):
 def _cached_filter_options(field, fmt):
     return tuple(_get_filter_options_for_field(field, fmt))
 
+
+# ─────────────────────────────────────────────
+# Cascading filter helpers ("Apply existing filters")
+# ─────────────────────────────────────────────
+
+def _table_for_field(f):
+    if f in _STUDY_FILTER_FIELDS:
+        return "study"
+    if f in _USER_GROUP_FILTER_FIELDS:
+        return "user_group"
+    if f in _QMNEM_FILTER_FIELDS:
+        return "qmnem"
+    return "usage"
+
+
+def _parquet_src_for_field(f):
+    return {
+        "study":      f"read_parquet('{str(STUDY_PATH)}')",
+        "user_group": f"read_parquet('{str(USER_GROUP_PATH)}')",
+        "qmnem":      f"read_parquet('{str(QMNEM_PATH)}')",
+        "usage":      f"read_parquet('{str(USAGE_PATH)}')",
+    }[_table_for_field(f)]
+
+
+def _usage_ids_sql(filter_table, where_str):
+    """SQL returning the USAGE_IDs that satisfy a filter living in filter_table."""
+    usage  = f"read_parquet('{str(USAGE_PATH)}')"
+    bridge = f"read_parquet('{str(BRIDGE_PATH)}')"
+    if filter_table == "usage":
+        return f"SELECT USAGE_ID FROM {usage} WHERE {where_str}"
+    if filter_table == "study":
+        return (f"SELECT b.USAGE_ID FROM {bridge} b "
+                f"JOIN read_parquet('{str(STUDY_PATH)}') s ON b.STUDY_ID = s.STUDY_ID "
+                f"WHERE {where_str}")
+    if filter_table == "user_group":
+        return (f"SELECT u.USAGE_ID FROM {usage} u "
+                f"JOIN read_parquet('{str(USER_GROUP_PATH)}') g ON u.USER_ID = g.USER_ID "
+                f"WHERE {where_str}")
+    if filter_table == "qmnem":
+        return f"SELECT USAGE_ID FROM read_parquet('{str(QMNEM_PATH)}') WHERE {where_str}"
+    raise ValueError(f"unknown table {filter_table}")
+
+
+def _restrict_current_table(current_table, usage_ids_sql):
+    """WHERE fragment restricting the current field's table to the given USAGE_IDs."""
+    usage  = f"read_parquet('{str(USAGE_PATH)}')"
+    bridge = f"read_parquet('{str(BRIDGE_PATH)}')"
+    if current_table in ("usage", "qmnem"):
+        return f"USAGE_ID IN ({usage_ids_sql})"
+    if current_table == "study":
+        return f"STUDY_ID IN (SELECT STUDY_ID FROM {bridge} WHERE USAGE_ID IN ({usage_ids_sql}))"
+    if current_table == "user_group":
+        return f"USER_ID IN (SELECT USER_ID FROM {usage} WHERE USAGE_ID IN ({usage_ids_sql}))"
+    raise ValueError(f"unknown table {current_table}")
+
+
+def _cascade_where_sql(field_filters, current_field):
+    """
+    Build ' AND ...' clauses restricting current_field's table to rows consistent
+    with every OTHER active filter on the worksheet. Returns "" when there's nothing
+    to apply. Works across usage, study, user_group and qmnem tables.
+    """
+    same_clauses, cross_fields = _build_cascade_where(field_filters or {}, current_field)
+    current_table = _table_for_field(current_field)
+    clauses = list(same_clauses)
+    for cross in cross_fields:
+        ids_sql = _usage_ids_sql(cross["filter_table"], cross["where_str"])
+        clauses.append(_restrict_current_table(current_table, ids_sql))
+    return (" AND " + " AND ".join(clauses)) if clauses else ""
+
+
+def _ws_field_filters_for(worksheet_id):
+    """
+    Current (in-browser) field filters for worksheet_id, taken from the
+    ws-field-filters State of the running callback. Matches by component index,
+    the same way open_field_filter does, so it never depends on config order.
+    """
+    for group in ctx.states_list:
+        if not isinstance(group, list):
+            continue
+        for item in group:
+            item_id = item.get("id") if isinstance(item, dict) else None
+            if (isinstance(item_id, dict)
+                    and item_id.get("type") == "ws-field-filters"
+                    and item_id.get("index") == worksheet_id):
+                return item.get("value") or {}
+    return {}
+
+
+def _val_expr_for(field, fmt):
+    """Same value expression the normal option list uses, so values match exactly."""
+    if fmt == "year":
+        return f"CAST(YEAR({field}) AS VARCHAR)"
+    if fmt == "quarter":
+        return f"CONCAT(CAST(YEAR({field}) AS VARCHAR), ' Q', CAST(QUARTER({field}) AS VARCHAR))"
+    if fmt in ("month_abbrev", "month_name", "month_num", "year_month") \
+            or field in {"TABRUN_MY", "ACTION_DATE"}:
+        return f"STRFTIME({field}, '%Y-%m')"
+    return field
+
+
+def _get_cascaded_options(field, fmt, where_extra, search_like=None, reverse=False, limit=None):
+    """Distinct option values for field, restricted by where_extra (and optional LIKE search)."""
+    val_expr = _val_expr_for(field, fmt)
+    search_sql = ""
+    if search_like:
+        search_sql = f" AND LOWER(CAST({field} AS VARCHAR)) LIKE '{search_like}'"
+    order = "DESC" if reverse else "ASC"
+    limit_sql = f" LIMIT {int(limit)}" if limit else ""
+    sql = (f"SELECT DISTINCT {val_expr} AS val FROM {_parquet_src_for_field(field)} "
+           f"WHERE {field} IS NOT NULL{search_sql}{where_extra} "
+           f"ORDER BY LOWER(CAST(val AS VARCHAR)) {order}{limit_sql}")
+    con = duckdb.connect()
+    try:
+        con.execute("SET memory_limit='1GB'")
+        result = con.execute(sql).fetchdf()
+    finally:
+        con.close()
+    print(f"[FilterDebug] cascade SQL for {field}: {sql} -> {len(result)} rows")
+    return [{"label": str(v).strip(), "value": str(v).strip()}
+            for v in result["val"] if v is not None]
+
+
 def _get_options_for_field(field, fmt, calcs):
     """Get filter options for any field including global calculations."""
     if field in calcs:
@@ -3013,115 +3136,63 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
     if not context_input:
         raise dash.exceptions.PreventUpdate
 
-    field    = context_input.get("field", "")
-    fmt      = context_input.get("fmt", "none")
+    field      = context_input.get("field", "")
+    fmt        = context_input.get("fmt", "none")
+    ws_id      = context_input.get("worksheet_id", "")
     user_email = _user_email()
-    cfg      = load_config(user_email=user_email)
-    calcs    = cfg.get("global_calculations", {})
+    calcs      = load_config(user_email=user_email).get("global_calculations", {})
     sort_order_data = sort_order if isinstance(sort_order, dict) else {}
-    field = context_input.get("field", "")
-    reverse = (sort_order_data.get(field, "asc") == "desc")
-    triggered = ctx.triggered_id
-    print(f"[FilterDebug] search_filter_options: field={field}, cascade={cascade}, triggered={triggered}, user={user_email}, search={search}")
+    reverse    = (sort_order_data.get(field, "asc") == "desc")
+    triggered  = ctx.triggered_id
+    search_lower = (search or "").strip().lower()
+    if triggered in ("perm-filter-clear-search-btn", "perm-field-context"):
+        search_lower = ""
+    print(f"[FilterDebug] search_filter_options: ws={ws_id}, field={field}, "
+          f"cascade={cascade}, triggered={triggered}, user={user_email}, search={search_lower!r}")
 
-    def get_full_sorted():
-        full = list(_get_options_for_field(field, fmt, calcs))
-        real = [o for o in full if o.get("value") not in
-                ("__hint__", "__loading__", "__error__", "__none__")]
-        real.sort(key=lambda o: str(o.get("label", "")).lower(), reverse=reverse)
-        return real if real else \
-               [{"label": "No values found", "value": "__none__", "disabled": True}]
+    SPECIAL = ("__hint__", "__loading__", "__error__", "__none__")
 
-    if triggered == "perm-field-context":
-        if field in HIGH_CARDINALITY_FIELDS:
-            return [], ""
-        return get_full_sorted(), ""
+    # High-cardinality fields: never load everything; hand the (escaped) search term
+    # to execute_hc_search, which applies the search and cascade in SQL.
+    if field in HIGH_CARDINALITY_FIELDS:
+        if len(search_lower) < 3:
+            return [], {"q": "", "ts": time.time()}
+        return [], {"q": search_lower.replace("'", "''"), "ts": time.time()}
 
-    if triggered == "perm-filter-clear-search-btn":
-        if field in HIGH_CARDINALITY_FIELDS:
-            return [], ""
-        return get_full_sorted(), ""
+    # Base list: every value, or only values consistent with the other filters.
+    base = None
+    if cascade and field not in calcs:
+        ff    = _ws_field_filters_for(ws_id)
+        where = _cascade_where_sql(ff, field)
+        print(f"[FilterDebug] cascade: other_filters={[k for k in ff if k.split('|')[-1] != field]}, "
+              f"where={where!r}")
+        if where:
+            try:
+                base = _get_cascaded_options(field, fmt, where, reverse=reverse)
+            except Exception as e:
+                print(f"[FilterDebug] cascade query failed for {field}: {e}")
+                base = None
+    if base is None:
+        base = [o for o in _get_options_for_field(field, fmt, calcs)
+                if o.get("value") not in SPECIAL]
+        base.sort(key=lambda o: str(o.get("label", "")).lower(), reverse=reverse)
 
-    if triggered == "perm-filter-cascade":
-        print(f"[FilterDebug] cascade triggered: cascade={cascade}, field={field}, search={search}")
-        # Get other active filters for this worksheet
-        ws_id = context_input.get("worksheet_id", "")
-        ws_idx = 0
-        try:
-            cfg_ws = load_config(user_email=user_email).get("worksheets", [])
-            for i, w in enumerate(cfg_ws):
-                if w.replace(" ", "_") == ws_id:
-                    ws_idx = i
-                    break
-        except Exception:
-            pass
-
-        other_filters = {}
-        if field_filters_data and ws_idx < len(field_filters_data):
-            other_filters = {k: v for k, v in field_filters_data[ws_idx].items() if field not in k}
-        print(f"[FilterDebug] cascade: other_filters={list(other_filters.keys())}, source=ws-field-filters-store")
-
-        # Apply cascade filtering (same as normal path, just note cascade is on)
-        if field in HIGH_CARDINALITY_FIELDS:
-            search_lower = (search or "").strip().lower()
-            if len(search_lower) >= 3:
-                search_lower = search_lower.replace("'", "''")
-                print(f"[FilterDebug] cascade: HIGH_CARDINALITY, deferring to execute_hc_search with cascade=True")
-                return [], search_lower
-            print(f"[FilterDebug] cascade result: HIGH_CARDINALITY, no search, empty list")
-            return [], ""
-
-        # Normal cardinality with cascade - just return full sorted for now (cascade filtering TODO)
-        full = get_full_sorted()
-        print(f"[FilterDebug] cascade result: field={field}, options_count={len(full)}, cascade_filters={len(other_filters)}")
-        return full, ""
-
-    if triggered == "perm-filter-sort":
-        if field in HIGH_CARDINALITY_FIELDS:
-            search_lower = (search or "").strip().lower()
-            if len(search_lower) >= 3:
-                # Re-run the search with new sort order
-                search_lower = search_lower.replace("'", "''")
-                return [], search_lower
-            return [], ""
-        return get_full_sorted(), "" ""
-
-    if triggered == "perm-filter-search-btn":
-        search_lower = (search or "").strip().lower()
-        if not search_lower:
-            if field in HIGH_CARDINALITY_FIELDS:
-                return [], ""
-            return get_full_sorted(), ""
-
-        if field in HIGH_CARDINALITY_FIELDS:
-            if len(search_lower) < 3:
-                return [], ""
-            # Clear the list immediately, store the term for execute callback
-            search_lower = search_lower.replace("'", "''")
-            return [], search_lower
-
-        # Normal cardinality — do it inline, no race risk
-        full     = list(_get_options_for_field(field, fmt, calcs))
+    # Apply the search text (if any) to the base list.
+    if search_lower:
         import fnmatch
-        if '*' in search_lower or '?' in search_lower:
-            filtered = [o for o in full
-                        if fnmatch.fnmatch(str(o.get("label", "")).lower(), search_lower)
-                        and o.get("value") not in ("__loading__", "__error__",
-                                                   "__hint__", "__none__")]
+        if "*" in search_lower or "?" in search_lower:
+            base = [o for o in base
+                    if fnmatch.fnmatch(str(o.get("label", "")).lower(), search_lower)]
         else:
-            filtered = [o for o in full
-                        if search_lower in str(o.get("label", "")).lower()
-                        and o.get("value") not in ("__loading__", "__error__",
-                                                   "__hint__", "__none__")]
-        filtered.sort(key=lambda o: str(o.get("label", "")), reverse=reverse)
-        first_20 = [o.get("label", "") for o in filtered[:20]]
-        print(f"[FilterDebug] search results: search={search_lower}, query_count={len(filtered)}, first_20={first_20}")
-        # Note: any selected values would be in field_filters_data but not merged here, so search results = query results only
-        final_result = filtered if filtered else [{"label": "No matches found", "value": "__none__", "disabled": True}]
-        print(f"[FilterDebug] search final: sending {len(final_result)} items to checklist")
-        return final_result, ""
+            base = [o for o in base if search_lower in str(o.get("label", "")).lower()]
 
-    raise dash.exceptions.PreventUpdate
+    print(f"[FilterDebug] search final: sending {len(base)} items, "
+          f"first_20={[o.get('label') for o in base[:20]]}")
+    if not base:
+        msg = "No matches found" if search_lower else "No values found"
+        return [{"label": msg, "value": "__none__", "disabled": True}], dash.no_update
+    return base, dash.no_update
+
 
 @app.callback(
     Output("perm-field-filter-checklist", "options", allow_duplicate=True),
@@ -3166,108 +3237,40 @@ def update_options_on_fmt_change(new_fmt, context, sort_order):
     State({"type": "ws-field-filters", "index": ALL}, "data"),
     prevent_initial_call=True
 )
-def execute_hc_search(search_lower, context_input, sort_order, cascade, field_filters_data):
+def execute_hc_search(pending, context_input, sort_order, cascade, field_filters_data):
+    # pending is {"q": escaped search, "ts": time} (older builds sent a plain string)
+    search_lower = pending.get("q", "") if isinstance(pending, dict) else (pending or "")
     if not search_lower or not context_input:
         raise dash.exceptions.PreventUpdate
     field = context_input.get("field", "")
     if field not in HIGH_CARDINALITY_FIELDS:
         raise dash.exceptions.PreventUpdate
 
-    search_lower = search_lower.replace("'", "''")
     sort_order_data = sort_order if isinstance(sort_order, dict) else {}
     reverse = (sort_order_data.get(field, "asc") == "desc")
-    sort_dir = "DESC" if reverse else "ASC"
 
-    if field in _STUDY_FILTER_FIELDS:
-        parquet_src = f"read_parquet('{str(STUDY_PATH)}')"
-    elif field in _USER_GROUP_FILTER_FIELDS:
-        parquet_src = f"read_parquet('{str(USER_GROUP_PATH)}')"
-    elif field in _QMNEM_FILTER_FIELDS:
-        parquet_src = f"read_parquet('{str(QMNEM_PATH)}')"
-    else:
-        parquet_src = f"read_parquet('{str(USAGE_PATH)}')"
-
-    # Build cascade filters
     where_extra = ""
-    print(f"CASCADE DEBUG: field={field}, where_extra={where_extra}")
-    if cascade and context_input.get("worksheet_id"):
-        ws_id = context_input["worksheet_id"]
-        # field_filters_data is a list — we need to match by worksheet index
-        # The index positions correspond to worksheet order
-        ws_idx = 0
-        try:
-            cfg_ws = load_config().get("worksheets", [])
-            for i, w in enumerate(cfg_ws):
-                if w.replace(" ", "_") == ws_id:
-                    ws_idx = i
-                    break
-        except Exception:
-            pass
-        ff = field_filters_data[ws_idx] if field_filters_data else {}
-        same_clauses, cross_fields = _build_cascade_where(ff, field)
+    if cascade:
+        ff = _ws_field_filters_for(context_input.get("worksheet_id", ""))
+        where_extra = _cascade_where_sql(ff, field)
+        print(f"[FilterDebug] hc cascade: field={field}, where={where_extra!r}")
 
-        if same_clauses:
-            where_extra = " AND " + " AND ".join(same_clauses)
-
-        # Cross-table: e.g. filtering LONG_NAME (study) by CLIENT_NAME (usage)
-        for cross in cross_fields:
-            if cross["current_table"] == "study" and cross["filter_table"] == "usage":
-                where_extra += f"""
-                    AND STUDY_ID IN (
-                        SELECT DISTINCT b.STUDY_ID
-                        FROM read_parquet('{str(BRIDGE_PATH)}') b
-                        JOIN read_parquet('{str(USAGE_PATH)}') u ON b.USAGE_ID = u.USAGE_ID
-                        WHERE {cross['where_str']}
-                    )"""
-            elif cross["current_table"] == "usage" and cross["filter_table"] == "study":
-                where_extra += f"""
-                    AND USAGE_ID IN (
-                        SELECT DISTINCT b.USAGE_ID
-                        FROM read_parquet('{str(BRIDGE_PATH)}') b
-                        JOIN read_parquet('{str(STUDY_PATH)}') s ON b.STUDY_ID = s.STUDY_ID
-                        WHERE {cross['where_str']}
-                    )"""
-            elif cross["current_table"] == "study" and cross["filter_table"] == "user_group":
-                where_extra += f"""
-                    AND STUDY_ID IN (
-                        SELECT DISTINCT b.STUDY_ID
-                        FROM read_parquet('{str(BRIDGE_PATH)}') b
-                        JOIN read_parquet('{str(USAGE_PATH)}') u ON b.USAGE_ID = u.USAGE_ID
-                        JOIN read_parquet('{str(USER_GROUP_PATH)}') ug ON u.USER_ID = ug.USER_ID
-                        WHERE {cross['where_str']}
-                    )"""
-    # Support wildcards: * becomes %, ? becomes _
-    if '*' in search_lower or '?' in search_lower:
-        search_like = search_lower.replace('*', '%').replace('?', '_')
+    if "*" in search_lower or "?" in search_lower:
+        search_like = search_lower.replace("*", "%").replace("?", "_")
     else:
-        search_like = f'%{search_lower}%'
+        search_like = f"%{search_lower}%"
+
     try:
-        con = duckdb.connect()
-        con.execute("SET memory_limit='1GB'")
-        sql = f"""SELECT DISTINCT
-                      {field} as val,
-                      {field} as label,
-                      {field} as sort_key
-                  FROM {parquet_src}
-                  WHERE {field} IS NOT NULL
-                    AND LOWER(CAST({field} AS VARCHAR)) LIKE '{search_like}'{where_extra}
-                  ORDER BY sort_key {sort_dir}
-                  LIMIT 5000"""
-        result = con.execute(sql).fetchdf()
-        con.close()
-        options = [
-            {"label": str(row["label"]).strip(),
-             "value": str(row["val"]).strip()}
-            for _, row in result.iterrows()
-            if row["val"] is not None
-        ]
+        options = _get_cascaded_options(field, "none", where_extra,
+                                        search_like=search_like, reverse=reverse, limit=5000)
         return options if options else \
                [{"label": "No matches found", "value": "__none__", "disabled": True}]
     except Exception as e:
         print(f"Search error for {field}: {e}")
         return [{"label": "Search error", "value": "__none__", "disabled": True}]
-        
-                   
+
+
+
 @app.callback(
     Output("filter-search-status", "children"),
     Input("perm-field-filter-checklist", "options"),
