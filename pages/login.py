@@ -3,7 +3,6 @@ import dash_bootstrap_components as dbc
 
 def build_login_layout():
     return html.Div([
-        dcc.Location(id="url", refresh=True),
         html.Div([
             html.Div([
                 html.Img(src="/assets/mtableauLogo2.png",
@@ -27,7 +26,6 @@ def build_login_layout():
 
 def build_change_password_layout():
     return html.Div([
-        dcc.Location(id="url", refresh=True),
         html.Div([
             html.Div([
                 html.H4("Change Password", className="mb-2 fw-bold text-center"),

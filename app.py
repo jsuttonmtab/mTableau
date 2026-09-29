@@ -4445,6 +4445,7 @@ if IS_WEB:
         prevent_initial_call=True
     )
     def handle_change_password(n_clicks, new_pwd, confirm_pwd):
+        print(f"[Change Password] triggered")
         if not new_pwd or not confirm_pwd:
             return "Both password fields required", dash.no_update
 
