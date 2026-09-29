@@ -1121,7 +1121,6 @@ def _get_layout():
 
 ], style={"display": "flex", "flexDirection": "column",
           "height": "100vh", "overflow": "hidden"})
-    )  # End of _get_layout function
 
 app.layout = _get_layout  # Set to function, not result - Dash will call it for each page load
 
