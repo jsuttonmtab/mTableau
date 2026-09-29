@@ -346,6 +346,7 @@ def _get_filter_options_for_field(field, fmt="none"):
                       FROM {parquet_src} WHERE {field} IS NOT NULL ORDER BY LOWER(CAST(val AS VARCHAR))"""
         result = con.execute(sql).fetchdf()
         con.close()
+        print(f"[FilterDebug] Query for field={field}: {sql[:100]}{'...' if len(sql) > 100 else ''} -> {len(result)} rows")
         return [{"label": str(r).strip(), "value": str(r).strip()}
                 for r in result["val"] if r is not None]
     except Exception as e:
@@ -3043,6 +3044,11 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
 
     if triggered == "perm-filter-cascade":
         print(f"[FilterDebug] cascade triggered: cascade={cascade}, field={field}, search={search}")
+        # Log other active filters for this worksheet
+        ws_index = context_input.get("worksheet_id", "")
+        if field_filters_data and ws_index < len(field_filters_data):
+            other_filters = {k: v for k, v in field_filters_data[ws_index].items() if field not in k}
+            print(f"[FilterDebug] cascade: other_filters={list(other_filters.keys())}, source=ws-field-filters-store")
         if field in HIGH_CARDINALITY_FIELDS:
             search_lower = (search or "").strip().lower()
             if len(search_lower) >= 3:
@@ -3092,9 +3098,11 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
                                                    "__hint__", "__none__")]
         filtered.sort(key=lambda o: str(o.get("label", "")), reverse=reverse)
         first_20 = [o.get("label", "") for o in filtered[:20]]
-        print(f"[FilterDebug] search results: search={search_lower}, count={len(filtered)}, first_20={first_20}")
-        return filtered if filtered else \
-               [{"label": "No matches found", "value": "__none__", "disabled": True}], ""
+        print(f"[FilterDebug] search results: search={search_lower}, query_count={len(filtered)}, first_20={first_20}")
+        # Note: any selected values would be in field_filters_data but not merged here, so search results = query results only
+        final_result = filtered if filtered else [{"label": "No matches found", "value": "__none__", "disabled": True}]
+        print(f"[FilterDebug] search final: sending {len(final_result)} items to checklist")
+        return final_result, ""
 
     raise dash.exceptions.PreventUpdate
 
