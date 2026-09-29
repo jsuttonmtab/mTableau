@@ -144,6 +144,10 @@ FMT_SHORT = {
     "month_only_num": "MM", "month_only_num_nz": "M"
 }
 
+def _ws_key(ws_name):
+    """Convert worksheet name to state key (replace spaces with underscores)."""
+    return ws_name.replace(" ", "_")
+
 def _fmt_key(shelf, field):
     return f"{shelf}|{field}"
 
@@ -157,8 +161,7 @@ def _is_readonly_ws(ws_name, user_email=None):
     if not user_email:
         return False
     cfg = load_config(user_email=user_email)
-    ws_key = ws_name.replace(" ", "_")
-    ws_state = cfg.get("ws_state", {}).get(ws_key, {})
+    ws_state = cfg.get("ws_state", {}).get(_ws_key(ws_name), {})
     return bool(ws_state.get("shared_from"))
 
 def _get_ws_shared_from(ws_name, user_email=None):
@@ -167,8 +170,7 @@ def _get_ws_shared_from(ws_name, user_email=None):
     if not user_email:
         return None
     cfg = load_config(user_email=user_email)
-    ws_key = ws_name.replace(" ", "_")
-    return cfg.get("ws_state", {}).get(ws_key, {}).get("shared_from")
+    return cfg.get("ws_state", {}).get(_ws_key(ws_name), {}).get("shared_from")
 
 def _load_owner_ws_state(shared_from):
     """Load worksheet state from owner (live reference)."""
@@ -873,6 +875,16 @@ def _get_layout():
     else:
         merged_calcs = personal_calcs
 
+    # Build list of shared worksheet names for client-side menu control
+    shared_ws_names = []
+    if IS_WEB and user_email:
+        ws_state = config.get("ws_state", {})
+        for ws_key, state in ws_state.items():
+            if state.get("shared_from"):
+                ws_name = ws_key.replace("_", " ")
+                if ws_name in current_worksheets:
+                    shared_ws_names.append(ws_name)
+
     return html.Div([
     dcc.Location(id="url", refresh=True),
     dcc.Store(id="worksheet-store",        data=current_worksheets, storage_type="memory"),
@@ -896,6 +908,7 @@ def _get_layout():
     dcc.Store(id="ws-last-sql",            data={}, storage_type="memory"),
     dcc.Store(id="sql-display-payload",    data=""),
     dcc.Store(id="share-ws-payload",       data=""),
+    dcc.Store(id="shared-ws-names",        data=shared_ws_names),
     dcc.Download(id="download-data"),
     dcc.Download(id="download-crosstab"),
 
@@ -1458,6 +1471,17 @@ app.clientside_callback(
     Input("badge-context-trigger-btn", "n_clicks"),
     prevent_initial_call=True
 )
+
+app.clientside_callback(
+    """function(shared_names) {
+        window._sharedWsNames = shared_names || [];
+        return window.dash_clientside.no_update;
+    }""",
+    Output("shared-ws-names", "data", allow_duplicate=True),
+    Input("shared-ws-names", "data"),
+    prevent_initial_call=False
+)
+
 app.clientside_callback(
     """function(n_clicks) {
         if (n_clicks && n_clicks.some(n => n)) return true;
@@ -1854,17 +1878,10 @@ def restore_tabs(worksheets, current_value):
             owner = get_user(owner_email)
             owner_name = owner.name if owner else owner_email.split("@")[0]
 
-            # Use Bootstrap people-fill icon with tooltip
-            label = html.Div([
-                html.I(className="bi bi-people-fill",
-                       title=f"Shared by {owner_name} (read-only)",
-                       style={"fontSize": "12px", "marginRight": "4px", "opacity": "0.7"}),
-                w
-            ], style={"display": "flex", "alignItems": "center", "gap": "4px"})
-            tabs.append(dcc.Tab(label=label, value=w, **{"data-shared": "1"}))
-        else:
-            label = w
-            tabs.append(dcc.Tab(label=label, value=w))
+        # Keep label plain text - icon/shared state handled by JS
+        tabs.append(dcc.Tab(label=w, value=w))
+    else:
+        tabs.append(dcc.Tab(label=w, value=w))
 
     active = current_value if current_value in worksheets else worksheets[0]
     return tabs, active

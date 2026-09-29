@@ -65,7 +65,11 @@ setTimeout(function() {
             targetTab = tab;
             menu.style.display = 'block';
             // For received tabs (data-shared="1"), hide Sharing, Rename, Settings
-            const isShared = tab.hasAttribute('data-shared');
+            // Check if tab is shared (received) by checking window._sharedWsNames
+            const sharedNames = window._sharedWsNames || [];
+            const tabName = tab.textContent.trim();
+            const isShared = sharedNames.includes(tabName);
+
             const ctxShareCopy = document.getElementById('ctx-share-copy');
             const ctxRename = document.getElementById('ctx-rename');
             const ctxSettings = document.getElementById('ctx-settings');
