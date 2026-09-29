@@ -35,7 +35,7 @@ import duckdb
 try:
     from flask_login import login_user, logout_user, current_user
     from utils.auth import (
-        init_auth, authenticate, must_change_password,
+        init_auth, authenticate, get_user, must_change_password,
         change_password, add_user, delete_user, list_users, reset_password
     )
     from pages.login import build_login_layout, build_change_password_layout
@@ -116,7 +116,7 @@ if IS_WEB:
     def logout_route():
         """Logout route."""
         logout_user()
-        return redirect(f"{os.environ.get('MTABLEAU_BASE', '')}/login")
+        return redirect(app.get_relative_path("/"))
 
 FMT_SHORT = {
     "year": "YEAR", "year_month": "YM", "month_name": "MON",
@@ -4449,8 +4449,7 @@ def handle_login(n_clicks, n_submit, email, password):
 
     login_user(user, remember=True)
     print(f"[Login] SUCCESS: {email}")
-    mtableau_base = os.environ.get("MTABLEAU_BASE", "/")
-    return "", f"{mtableau_base}/?r={int(time.time())}"
+    return "", app.get_relative_path("/") + f"?r={int(time.time())}"
 
 @app.callback(
     Output("cp-error", "children"),
@@ -4479,8 +4478,7 @@ def handle_change_password(n_clicks, n_submit, new_pwd, confirm_pwd):
 
     if change_password(current_user.email, new_pwd):
         print(f"[Change Password] SUCCESS: {current_user.email}")
-        mtableau_base = os.environ.get("MTABLEAU_BASE", "/")
-        return "", f"{mtableau_base}/?r={int(time.time())}"
+        return "", app.get_relative_path("/") + f"?r={int(time.time())}"
     else:
         print(f"[Change Password] FAIL: Could not save password")
         return "Error changing password", dash.no_update
