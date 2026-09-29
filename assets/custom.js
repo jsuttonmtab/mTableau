@@ -48,6 +48,7 @@ setTimeout(function() {
 
     ['ctx-rename', 'ctx-duplicate', 'ctx-show-sql', 'ctx-share-copy', 'ctx-settings'].forEach(function(id) {
         const el = document.getElementById(id);
+        if (!el) return;
         el.addEventListener('mouseenter', function() { el.style.backgroundColor = '#f0f4ff'; });
         el.addEventListener('mouseleave', function() { el.style.backgroundColor = 'white'; });
     });
@@ -79,10 +80,12 @@ setTimeout(function() {
     document.addEventListener('click', function(e) { if (!menu.contains(e.target)) hideTabMenu(); });
     document.addEventListener('keydown', function(e) { if (e.key === 'Escape') hideTabMenu(); });
 
-    document.getElementById('ctx-rename').addEventListener('click', function() {
-        if (!targetTab) return;
-        const currentName = targetTab.textContent.trim();
-        hideTabMenu();
+    const ctxRename = document.getElementById('ctx-rename');
+    if (ctxRename) {
+        ctxRename.addEventListener('click', function() {
+            if (!targetTab) return;
+            const currentName = targetTab.textContent.trim();
+            hideTabMenu();
         
         // Create overlay dialog
         const overlay = document.createElement('div');
@@ -126,39 +129,52 @@ setTimeout(function() {
             if (e.key === 'Enter') doRename();
             if (e.key === 'Escape') doCancel();
         });
-    });
+        });
+    }
 
-    document.getElementById('ctx-duplicate').addEventListener('click', function() {
+    const ctxDuplicate = document.getElementById('ctx-duplicate');
+    if (ctxDuplicate) {
+        ctxDuplicate.addEventListener('click', function() {
         if (!targetTab) return;
         const tabName = targetTab.textContent.trim(); hideTabMenu();
         window._dashDupePayload = tabName;
         const btn = document.getElementById('dupe-trigger-btn');
         if (btn) btn.click();
-    });
+        });
+    }
 
-    document.getElementById('ctx-settings').addEventListener('click', function() {
+    const ctxSettings = document.getElementById('ctx-settings');
+    if (ctxSettings) {
+        ctxSettings.addEventListener('click', function() {
         if (!targetTab) return;
         const tabName = targetTab.textContent.trim(); hideTabMenu();
         window._dashWsSettingsPayload = tabName;
         const btn = document.getElementById('ws-settings-trigger-btn');
         if (btn) btn.click();
-    });
+        });
+    }
 
-    document.getElementById('ctx-show-sql').addEventListener('click', function() {
-        if (!targetTab) return;
-        const tabName = targetTab.textContent.trim(); hideTabMenu();
-        window._dashShowSqlPayload = tabName;
-        const btn = document.getElementById('show-sql-trigger-btn');
-        if (btn) btn.click();
-    });
+    const ctxShowSql = document.getElementById('ctx-show-sql');
+    if (ctxShowSql) {
+        ctxShowSql.addEventListener('click', function() {
+            if (!targetTab) return;
+            const tabName = targetTab.textContent.trim(); hideTabMenu();
+            window._dashShowSqlPayload = tabName;
+            const btn = document.getElementById('show-sql-trigger-btn');
+            if (btn) btn.click();
+        });
+    }
 
-    document.getElementById('ctx-share-copy').addEventListener('click', function() {
-        if (!targetTab) return;
-        const tabName = targetTab.textContent.trim(); hideTabMenu();
-        window._dashShareWsPayload = tabName;
-        const btn = document.getElementById('share-ws-trigger-btn');
-        if (btn) btn.click();
-    });
+    const ctxShareCopy = document.getElementById('ctx-share-copy');
+    if (ctxShareCopy) {
+        ctxShareCopy.addEventListener('click', function() {
+            if (!targetTab) return;
+            const tabName = targetTab.textContent.trim(); hideTabMenu();
+            window._dashShareWsPayload = tabName;
+            const btn = document.getElementById('share-ws-trigger-btn');
+            if (btn) btn.click();
+        });
+    }
 })();
 
 // SQL copy to clipboard
