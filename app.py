@@ -4423,6 +4423,7 @@ if IS_WEB:
         prevent_initial_call=True
     )
     def handle_login(n_clicks, email, password):
+        print(f"[Login] triggered, email={email}")
         if not email or not password:
             return "Email and password required", dash.no_update
 
