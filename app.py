@@ -2967,8 +2967,12 @@ def open_field_filter(filter_clicks, shelf_clicks,
     summary = _build_filter_summary(current_values, current_exclude)
     user_email = _user_email()
     cfg     = load_config(user_email=user_email)
+    ws_state = cfg.get("ws_state", {}).get(_ws_key(worksheet_id), {})
+    is_received = bool(ws_state.get("shared_from"))
+    print(f"[FilterDebug] open_field_filter: ws={worksheet_id}, field={field}, user={user_email}, received={is_received}, current_values={current_values[:5] if len(current_values) > 5 else current_values}")
     calcs   = cfg.get("global_calculations", {})
     options = _get_options_for_field(field, current_fmt, calcs)
+    print(f"[FilterDebug] open_field_filter: options count={len(list(options)) if hasattr(options, '__len__') else '?'}")
     is_date = field in DATE_FIELDS
     if is_date:
         fmt_options = [{"label": "None", "value": "none"}] + [
@@ -3017,6 +3021,7 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
     field = context_input.get("field", "")
     reverse = (sort_order_data.get(field, "asc") == "desc")
     triggered = ctx.triggered_id
+    print(f"[FilterDebug] search_filter_options: field={field}, cascade={cascade}, triggered={triggered}, user={user_email}, search={search}")
 
     def get_full_sorted():
         full = list(_get_options_for_field(field, fmt, calcs))
@@ -3037,13 +3042,16 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
         return get_full_sorted(), ""
 
     if triggered == "perm-filter-cascade":
+        print(f"[FilterDebug] cascade triggered: cascade={cascade}, field={field}, search={search}")
         if field in HIGH_CARDINALITY_FIELDS:
             search_lower = (search or "").strip().lower()
             if len(search_lower) >= 3:
                 search_lower = search_lower.replace("'", "''")
                 return [], search_lower
             return [], ""
-        return get_full_sorted(), ""
+        full = get_full_sorted()
+        print(f"[FilterDebug] cascade result: field={field}, options_count={len(full)}")
+        return full, ""
 
     if triggered == "perm-filter-sort":
         if field in HIGH_CARDINALITY_FIELDS:
@@ -3083,6 +3091,8 @@ def search_filter_options(search_clicks, clear_clicks, sort_data,
                         and o.get("value") not in ("__loading__", "__error__",
                                                    "__hint__", "__none__")]
         filtered.sort(key=lambda o: str(o.get("label", "")), reverse=reverse)
+        first_20 = [o.get("label", "") for o in filtered[:20]]
+        print(f"[FilterDebug] search results: search={search_lower}, count={len(filtered)}, first_20={first_20}")
         return filtered if filtered else \
                [{"label": "No matches found", "value": "__none__", "disabled": True}], ""
 
