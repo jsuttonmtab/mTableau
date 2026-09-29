@@ -64,6 +64,11 @@ setTimeout(function() {
             e.preventDefault(); e.stopPropagation(); hideTabMenu();
             targetTab = tab;
             menu.style.display = 'block';
+            // Hide "Sharing" option for tabs with data-shared="1" (received worksheets)
+            const ctxShareCopy = document.getElementById('ctx-share-copy');
+            if (ctxShareCopy) {
+                ctxShareCopy.style.display = tab.hasAttribute('data-shared') ? 'none' : 'flex';
+            }
             const height = menu.offsetHeight;
             const width = menu.offsetWidth;
             let x = Math.min(e.clientX, window.innerWidth - width);

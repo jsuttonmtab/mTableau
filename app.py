@@ -1671,9 +1671,10 @@ def save_ws_settings(n_clicks, payload, col_total, row_total,
     settings = dict(ws_settings or {})
     settings[ws_key] = {"col_grand_total": col_total, "row_grand_total": row_total}
     try:
-        cfg = load_config()
+        user_email = _user_email()
+        cfg = load_config(user_email=user_email)
         cfg["ws_settings"] = settings
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not save ws_settings: {e}")
 
@@ -1802,10 +1803,10 @@ def restore_tabs(worksheets, current_value):
                     style={"marginLeft": "4px", "fontSize": "12px", "opacity": "0.8"}
                 )
             ])
+            tabs.append(dcc.Tab(label=label, value=w, **{"data-shared": "1"}))
         else:
             label = w
-
-        tabs.append(dcc.Tab(label=label, value=w))
+            tabs.append(dcc.Tab(label=label, value=w))
 
     active = current_value if current_value in worksheets else worksheets[0]
     return tabs, active
@@ -4437,9 +4438,10 @@ def delete_calc(n_clicks, global_calcs, current_measure_options, panel_ids):
     calcs = dict(global_calcs or {})
     calcs.pop(name, None)
     try:
-        cfg = load_config()
+        user_email = _user_email()
+        cfg = load_config(user_email=user_email)
         cfg["global_calculations"] = calcs
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not save calculations: {e}")
     updated_opts   = [[o for o in opts if o.get("value") != f"calc_{name}"]
@@ -4513,9 +4515,10 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
 
     calcs[name] = defn
     try:
-        cfg = load_config()
+        user_email = _user_email()
+        cfg = load_config(user_email=user_email)
         cfg["global_calculations"] = calcs
-        save_config(cfg)
+        save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not save calculations: {e}")
     new_opt        = {"label": f"{name} — {display}", "value": f"calc_{name}"}
@@ -4743,6 +4746,14 @@ def open_share_modal(payload, cancel_clicks):
     import datetime
 
     current_email = current_user.email if IS_WEB and current_user.is_authenticated else None
+
+    # Reject if this is a received tab (can't re-share)
+    cfg = load_config(user_email=current_email)
+    ws_key = payload.replace(" ", "_")
+    ws_state = cfg.get("ws_state", {}).get(ws_key, {})
+    if ws_state.get("shared_from"):
+        return False, "Sharing", html.Div("Tabs shared with you can't be re-shared.", style={"color": "#dc3545"}), "", True, ""
+
     all_users = list_users()
 
     # Get recipients who already have access via registry
@@ -4846,6 +4857,10 @@ def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs)
 
     if not ws_state:
         return f"Error: worksheet '{ws_name}' not found", dash.no_update, dash.no_update
+
+    # Reject if this is a received tab (can't re-share)
+    if ws_state.get("shared_from"):
+        return "Error: Tabs shared with you can't be re-shared", dash.no_update, dash.no_update
 
     # Collect referenced calcs
     referenced_calcs = {}

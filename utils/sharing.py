@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+import copy
 from pathlib import Path
 from utils.config import get_base_dir, get_user_dir
 
@@ -163,11 +164,11 @@ def merge_inbox_to_config(user_email, user_config):
             user_config["worksheets"] = []
         user_config["worksheets"].append(ws_name)
 
-        # Add worksheet state
+        # Add worksheet state (deep copy for complete independence)
         if "ws_state" not in user_config:
             user_config["ws_state"] = {}
         ws_key = ws_name.replace(" ", "_")
-        user_config["ws_state"][ws_key] = shared_ws["worksheet_state"]
+        user_config["ws_state"][ws_key] = copy.deepcopy(shared_ws["worksheet_state"])
 
         # Mark with shared_from for tracking
         if share_id:
