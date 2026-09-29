@@ -1,6 +1,7 @@
 import time
 import functools
 import sys
+import os
 from pathlib import Path
 import dash
 from dash import Dash, html, dcc, Input, Output, State, ctx, ALL
@@ -50,6 +51,74 @@ app = Dash(
     suppress_callback_exceptions=True
 )
 app.title = "mTableau"
+
+# Web mode detection and Flask-Login setup
+IS_FROZEN = getattr(sys, "frozen", False)
+IS_WEB = not IS_FROZEN and os.environ.get("MTABLEAU_BASE") is not None
+
+# Default stub for desktop mode (will be replaced by Flask-Login in web mode)
+if not IS_WEB:
+    class StubUser:
+        is_authenticated = True
+        must_change_password = False
+        email = "desktop"
+
+    class StubCurrentUser:
+        @property
+        def _get_current_object(self):
+            return StubUser()
+
+        def __getattr__(self, name):
+            return getattr(StubUser(), name)
+
+    current_user = StubCurrentUser()
+
+if IS_WEB:
+    from flask_login import LoginManager, login_user, logout_user, current_user, login_required
+    from flask import redirect, request
+    from utils.auth import init_auth, authenticate, get_user, list_users
+    from pages.login import build_login_layout, build_change_password_layout
+    from pages.users import build_users_layout
+
+    # Initialize auth system
+    init_auth()
+
+    # Set Flask secret key
+    secret_key = os.environ.get("SECRET_KEY", "mtableau-dev-key-change-in-production")
+    app.server.secret_key = secret_key
+
+    # Initialize Flask-Login
+    login_manager = LoginManager()
+    login_manager.init_app(app.server)
+    login_manager.login_view = "login"
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        return get_user(user_id)
+
+    # Routes to exempt from login requirement
+    EXEMPT_ROUTES = {"/login", "/logout", "/_dash-component-suites", "/assets",
+                     "/_favicon.ico", "/_dash-layout", "/_dash-dependencies",
+                     "/_reload-hash", "/_dash-update-component"}
+
+    @app.server.before_request
+    def require_login():
+        """Redirect unauthenticated users to login."""
+        if request.path.startswith("/_dash"):
+            return  # Allow Dash internal requests
+
+        is_exempt = any(request.path.startswith(route) for route in EXEMPT_ROUTES)
+        if is_exempt:
+            return
+
+        if not current_user.is_authenticated:
+            return redirect(f"{os.environ.get('MTABLEAU_BASE', '')}/login")
+
+    @app.server.route("/logout")
+    def logout_route():
+        """Logout route."""
+        logout_user()
+        return redirect(f"{os.environ.get('MTABLEAU_BASE', '')}/login")
 
 FMT_SHORT = {
     "year": "YEAR", "year_month": "YM", "month_name": "MON",
@@ -704,10 +773,18 @@ def _render_cols_items(cols, field_filters, date_formats, worksheet_id):
 # ─────────────────────────────────────────────
 
 def _get_layout():
+    # Check authentication if IS_WEB mode
+    if IS_WEB:
+        if not current_user.is_authenticated:
+            return build_login_layout()
+        if current_user.must_change_password:
+            return build_change_password_layout()
+
     # Read worksheets fresh from config on each page load (not cached)
     current_worksheets = load_config().get("worksheets", ["Worksheet 1"])
 
     return html.Div([
+    dcc.Location(id="url", refresh=True),
     dcc.Store(id="worksheet-store",        data=current_worksheets, storage_type="memory"),
     dcc.Store(id="global-calculations",    data=load_config().get("global_calculations", {})),
     dcc.Store(id="restore-complete",       data=False),
@@ -729,6 +806,38 @@ def _get_layout():
     dcc.Store(id="sql-display-payload",    data=""),
     dcc.Download(id="download-data"),
     dcc.Download(id="download-crosstab"),
+
+    # ── Auth buttons (web mode only) ────────────────────────────
+    html.Div([
+        dbc.Navbar([
+            dbc.Container([
+                html.Div(style={"flex": "1"}),
+                dbc.Nav([
+                    dbc.NavItem(
+                        dbc.Button(
+                            [html.I(className="bi bi-people-fill me-1"), "Users"],
+                            id="users-btn",
+                            color="outline-secondary",
+                            size="sm",
+                            className="me-2",
+                            style={"display": "none" if not IS_WEB else "block",
+                                   "fontSize": "11px"}
+                        )
+                    ) if IS_WEB else None,
+                    dbc.NavItem(
+                        dbc.Button(
+                            [html.I(className="bi bi-box-arrow-right me-1"), "Logout"],
+                            id="logout-btn",
+                            color="outline-danger",
+                            size="sm",
+                            style={"display": "none" if not IS_WEB else "block",
+                                   "fontSize": "11px"}
+                        )
+                    ) if IS_WEB else None,
+                ], navbar=True),
+            ], fluid=True, style={"display": "flex", "alignItems": "center"}),
+        ], color="light", light=True, className="border-bottom")
+    ], style={"display": "block" if IS_WEB else "none"}),
 
     html.Button(id="rename-trigger-btn",        style={"display": "none"}),
     html.Button(id="drop-trigger-btn",          style={"display": "none"}),
@@ -4313,6 +4422,168 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
     return (calcs, html.Span(f"✅ '{name}' saved!", className="text-success"),
             updated_opts, updated_panels, False)
 
+
+# ─────────────────────────────────────────────
+# Authentication Callbacks (Web Mode Only)
+# ─────────────────────────────────────────────
+
+if IS_WEB:
+    @app.callback(
+        Output("login-error", "children"),
+        Output("url", "pathname"),
+        Input("login-btn", "n_clicks"),
+        State("login-email", "value"),
+        State("login-password", "value"),
+        prevent_initial_call=True
+    )
+    def handle_login(n_clicks, email, password):
+        if not email or not password:
+            return "Email and password required", dash.no_update
+
+        user = authenticate(email, password)
+        if not user:
+            return "Invalid email or password", dash.no_update
+
+        login_user(user, remember=True)
+
+        if user.must_change_password:
+            return "", f"{os.environ.get('MTABLEAU_BASE', '')}/change-password"
+
+        return "", f"{os.environ.get('MTABLEAU_BASE', '')}/"
+
+    @app.callback(
+        Output("cp-error", "children"),
+        Output("url", "pathname", allow_duplicate=True),
+        Input("cp-btn", "n_clicks"),
+        State("cp-new-password", "value"),
+        State("cp-confirm-password", "value"),
+        prevent_initial_call=True
+    )
+    def handle_change_password(n_clicks, new_pwd, confirm_pwd):
+        if not new_pwd or not confirm_pwd:
+            return "Both password fields required", dash.no_update
+
+        if new_pwd != confirm_pwd:
+            return "Passwords do not match", dash.no_update
+
+        if len(new_pwd) < 6:
+            return "Password must be at least 6 characters", dash.no_update
+
+        from utils.auth import change_password
+        change_password(current_user.email, new_pwd)
+
+        return "", f"{os.environ.get('MTABLEAU_BASE', '')}/"
+
+    @app.callback(
+        Output("url", "pathname", allow_duplicate=True),
+        Input("logout-btn", "n_clicks"),
+        prevent_initial_call=True
+    )
+    def handle_logout(n_clicks):
+        logout_user()
+        return f"{os.environ.get('MTABLEAU_BASE', '')}/login"
+
+    @app.callback(
+        Output("settings-modal", "is_open"),
+        Output("settings-modal-content", "children"),
+        Input("users-btn", "n_clicks"),
+        State("settings-modal", "is_open"),
+        prevent_initial_call=True
+    )
+    def toggle_users_modal(n_clicks, is_open):
+        if not current_user.is_admin:
+            return False, ""
+
+        return True, build_users_layout()
+
+    @app.callback(
+        Output("user-action-msg", "children"),
+        Output("users-table-body", "children"),
+        Input("add-user-btn", "n_clicks"),
+        State("new-user-name", "value"),
+        State("new-user-email", "value"),
+        State("new-user-password", "value"),
+        State("new-user-admin", "value"),
+        prevent_initial_call=True
+    )
+    def handle_add_user(n_clicks, name, email, password, is_admin):
+        if not current_user.is_admin:
+            return "Not authorized", dash.no_update
+
+        if not name or not email or not password:
+            return "All fields required", dash.no_update
+
+        from utils.auth import add_user
+        if add_user(email, name, password, is_admin):
+            # Rebuild users table
+            users = list_users()
+            rows = []
+            for u in users:
+                rows.append(html.Tr([
+                    html.Td(u["name"], style={"fontSize": "13px"}),
+                    html.Td(u["email"], style={"fontSize": "13px"}),
+                    html.Td("Yes" if u["is_admin"] else "No", style={"fontSize": "13px"}),
+                    html.Td([
+                        dbc.Button("Reset PW", id={"type": "reset-pw-btn", "index": u["email"]},
+                                  color="warning", size="sm", outline=True, className="me-1",
+                                  style={"fontSize": "10px", "padding": "1px 6px"}),
+                        dbc.Button("Delete", id={"type": "delete-user-btn", "index": u["email"]},
+                                  color="danger", size="sm", outline=True,
+                                  style={"fontSize": "10px", "padding": "1px 6px"}),
+                    ], style={"whiteSpace": "nowrap"}),
+                ]))
+            return f"✅ User {email} added", rows
+        else:
+            return f"❌ User {email} already exists", dash.no_update
+
+    @app.callback(
+        Output("user-action-msg", "children", allow_duplicate=True),
+        Output("users-table-body", "children", allow_duplicate=True),
+        Input({"type": "reset-pw-btn", "index": ALL}, "n_clicks"),
+        Input({"type": "delete-user-btn", "index": ALL}, "n_clicks"),
+        prevent_initial_call=True
+    )
+    def handle_user_actions(reset_clicks, delete_clicks):
+        if not current_user.is_admin:
+            return "Not authorized", dash.no_update
+
+        triggered = ctx.triggered_id
+        if not triggered:
+            return dash.no_update, dash.no_update
+
+        action_type = triggered.get("type")
+        email = triggered.get("index")
+
+        from utils.auth import reset_password, delete_user
+
+        if action_type == "reset-pw-btn":
+            temp_pwd = "TempPwd123!"
+            reset_password(email, temp_pwd)
+            msg = f"✅ Password reset for {email}. Temp: {temp_pwd}"
+        elif action_type == "delete-user-btn":
+            delete_user(email)
+            msg = f"✅ User {email} deleted"
+        else:
+            return dash.no_update, dash.no_update
+
+        # Rebuild users table
+        users = list_users()
+        rows = []
+        for u in users:
+            rows.append(html.Tr([
+                html.Td(u["name"], style={"fontSize": "13px"}),
+                html.Td(u["email"], style={"fontSize": "13px"}),
+                html.Td("Yes" if u["is_admin"] else "No", style={"fontSize": "13px"}),
+                html.Td([
+                    dbc.Button("Reset PW", id={"type": "reset-pw-btn", "index": u["email"]},
+                              color="warning", size="sm", outline=True, className="me-1",
+                              style={"fontSize": "10px", "padding": "1px 6px"}),
+                    dbc.Button("Delete", id={"type": "delete-user-btn", "index": u["email"]},
+                              color="danger", size="sm", outline=True,
+                              style={"fontSize": "10px", "padding": "1px 6px"}),
+                ], style={"whiteSpace": "nowrap"}),
+            ]))
+        return msg, rows
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8050, debug=True)
