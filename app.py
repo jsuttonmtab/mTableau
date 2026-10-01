@@ -2219,13 +2219,14 @@ def save_ws_settings(n_clicks, payload, col_total, row_total,
     return settings, results[:len(worksheets or [])]
 
 
-@app.callback(
+# Close the "query running" dialog whenever a result table changes. Runs in the
+# browser: as a server callback it uploaded every tab's rendered table each time.
+app.clientside_callback(
+    "function(children) { return false; }",
     Output("query-running-modal", "is_open", allow_duplicate=True),
     Input({"type": "data-table-container", "index": ALL}, "children"),
     prevent_initial_call=True
 )
-def hide_query_modal(children):
-    return False
 
 
 # ─────────────────────────────────────────────
@@ -2399,25 +2400,23 @@ def restore_ws_settings(worksheets):
     return load_config(user_email=_user_email()).get("ws_settings", {})
 
 
-@app.callback(
+# Tab switch: show the clicked tab's area and hide the rest, entirely in the
+# browser. (This used to be a server callback that also sent every tab's rendered
+# table to the server on each click, i.e. megabytes per switch.)
+app.clientside_callback(
+    """
+    function(active) {
+        const ctx = window.dash_clientside.callback_context;
+        const key = (active || '').replace(/ /g, '_');
+        return (ctx.outputs_list || []).map(function(o) {
+            return {height: '100%', display: o.id.index === key ? 'block' : 'none'};
+        });
+    }
+    """,
     Output({"type": "ws-wrapper", "index": ALL}, "style"),
-    Output({"type": "data-table-container", "index": ALL}, "children",
-           allow_duplicate=True),
     Input("worksheet-tabs", "value"),
-    State("worksheet-store", "data"),
-    State({"type": "data-table-container", "index": ALL}, "children"),
-    prevent_initial_call=True
 )
-def show_active_worksheet(active_tab, worksheets, current_children):
-    """Show the active tab's area and hide the rest. Matched by key, not position:
-    the rendered wrappers can briefly differ from the saved worksheet list
-    (e.g. right after adding or duplicating a tab)."""
-    active_key = (active_tab or "").replace(" ", "_")
-    styles = [{"height": "100%",
-               "display": "block" if item["id"]["index"] == active_key else "none"}
-              for item in ctx.outputs_list[0]]
-    # Only toggles visibility; results were placed by restore_saved_results / Run Query.
-    return styles, [dash.no_update] * len(ctx.outputs_list[1])
+
 
 def _build_saved_result(ws_key):
     """Build the HTML table for a single saved worksheet result. Skip large results."""
@@ -4380,17 +4379,18 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
            allow_duplicate=True),
     Output("ws-last-run-state", "data", allow_duplicate=True),
     Output("restore-complete", "data"),
-    Input("worksheet-content", "children"),
+    # Triggered when the result containers exist. (It used to take the whole
+    # worksheet area as input, which uploaded every tab's layout to the server.)
+    Input({"type": "data-table-container", "index": ALL}, "id"),
     State("restore-complete", "data"),
     prevent_initial_call='initial_duplicate'
 )
-def restore_saved_results(children, restore_complete):
+def restore_saved_results(container_ids, restore_complete):
     # Only restore on initial page load, not after query updates
     if restore_complete:
-        print(f"[Restore] Already complete, skipping")
         raise dash.exceptions.PreventUpdate
 
-    if not children:
+    if not container_ids:
         raise dash.exceptions.PreventUpdate
 
     cfg = load_config(user_email=_user_email())
