@@ -1000,6 +1000,59 @@ def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
     return df
 
 
+_DATE_FILTER_FIELDS = {"TABRUN_MY", "ACTION_DATE", "TABRUN_TS"}
+
+
+def _date_filter_sql(col, values, exclude=False):
+    """
+    WHERE clause for a date field filtered on the dialog's values: years
+    ("2024"), year-months ("2024-06"), days ("2024-06-15") or quarters
+    ("Q1 2025" / "2025 Q1").
+
+    Values are grouped into one IN-check per kind. This used to be one
+    `col::VARCHAR LIKE '%2024-06%'` per value: with ~56 months selected that
+    converted every row's date to text and ran 56 substring searches on it,
+    ~5x slower on the 48M-row extract, and it ran twice per query (main +
+    grand-total summary). Anything not recognised still uses LIKE as before.
+    """
+    years, months, days, quarters, other = [], [], [], [], []
+    for raw in values:
+        v = str(raw).strip()
+        q = (re.match(r'^Q(\d)\s+(\d{4})$', v, re.IGNORECASE)
+             or re.match(r'^(\d{4})\s+Q(\d)$', v, re.IGNORECASE))
+        if q:
+            a, b = q.group(1), q.group(2)
+            qtr, yr = (a, b) if v.upper().startswith("Q") else (b, a)
+            quarters.append((int(yr), int(qtr)))
+        elif re.fullmatch(r"\d{4}", v):
+            years.append(int(v))
+        elif re.fullmatch(r"\d{4}-\d{2}", v):
+            months.append(v)
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            days.append(v)
+        elif v:
+            other.append(v.replace("'", "''"))
+
+    def in_list(items):
+        return ", ".join(f"'{i}'" for i in items)
+
+    parts = []
+    if years:
+        parts.append(f"YEAR({col}) IN ({', '.join(str(y) for y in sorted(set(years)))})")
+    if months:
+        parts.append(f"strftime({col}, '%Y-%m') IN ({in_list(sorted(set(months)))})")
+    if days:
+        parts.append(f"strftime({col}, '%Y-%m-%d') IN ({in_list(sorted(set(days)))})")
+    for yr, qtr in sorted(set(quarters)):
+        parts.append(f"(YEAR({col}) = {yr} AND QUARTER({col}) = {qtr})")
+    for v in other:
+        parts.append(f"{col}::VARCHAR LIKE '%{v}%'")
+    if not parts:
+        return None
+    combined = parts[0] if len(parts) == 1 else "(" + " OR ".join(parts) + ")"
+    return f"NOT {combined}" if exclude else combined
+
+
 def build_duck_where(field_filters, date_formats):
     from utils.query_engine import FIELD_REGISTRY
     from utils.config import load_config as _load_config
@@ -1053,44 +1106,10 @@ def build_duck_where(field_filters, date_formats):
         if clean_field not in FIELD_REGISTRY and clean_field not in calcs:
             continue
 
-        if clean_field in {"TABRUN_MY", "ACTION_DATE", "TABRUN_TS"}:
-            clauses = []
-            for v in values:
-                v = v.strip()
-                # Handle quarter format: "Q1 2025" or "2025 Q1"
-                q_match = re.match(r'^Q(\d)\s+(\d{4})$', v, re.IGNORECASE)
-                if not q_match:
-                    q_match = re.match(r'^(\d{4})\s+Q(\d)$', v, re.IGNORECASE)
-                    if q_match:
-                        yr, qtr = q_match.group(1), q_match.group(2)
-                    else:
-                        yr, qtr = None, None
-                else:
-                    qtr, yr = q_match.group(1), q_match.group(2)
-
-                if yr and qtr:
-                    qtr = int(qtr)
-                    start_month = (qtr - 1) * 3 + 1
-                    end_month = start_month + 2
-                    if exclude:
-                        clauses.append(
-                            f"NOT (YEAR({col}) = {yr} AND QUARTER({col}) = {qtr})"
-                        )
-                    else:
-                        clauses.append(
-                            f"(YEAR({col}) = {yr} AND QUARTER({col}) = {qtr})"
-                        )
-                else:
-                    # Regular LIKE for year, month, etc.
-                    if exclude:
-                        clauses.append(f"{col}::VARCHAR NOT LIKE '%{v}%'")
-                    else:
-                        clauses.append(f"{col}::VARCHAR LIKE '%{v}%'")
-
-            if exclude:
-                duck_where.append(f"({' AND '.join(clauses)})")
-            else:
-                duck_where.append(f"({' OR '.join(clauses)})")
+        if clean_field in _DATE_FILTER_FIELDS:
+            clause = _date_filter_sql(col, values, exclude)
+            if clause:
+                duck_where.append(clause)
         else:
             vals   = ", ".join([f"'{v.strip().replace(chr(39), chr(39)+chr(39))}'" for v in values])
             not_kw = "NOT " if exclude else ""
@@ -3995,31 +4014,7 @@ def _build_cascade_where(field_filters, current_field):
 
         # Date fields need LIKE matching, not IN
         if f in DATE_FILTER_FIELDS:
-            parts = []
-            for v in escaped:
-                q_match = re.match(r'^Q(\d)\s+(\d{4})$', v, re.IGNORECASE)
-                if not q_match:
-                    q_match = re.match(r'^(\d{4})\s+Q(\d)$', v, re.IGNORECASE)
-                    if q_match:
-                        yr, qtr = q_match.group(1), q_match.group(2)
-                    else:
-                        yr, qtr = None, None
-                else:
-                    qtr, yr = q_match.group(1), q_match.group(2)
-
-                if yr and qtr:
-                    if exclude:
-                        parts.append(f"NOT (YEAR({f}) = {yr} AND QUARTER({f}) = {int(qtr)})")
-                    else:
-                        parts.append(f"(YEAR({f}) = {yr} AND QUARTER({f}) = {int(qtr)})")
-                else:
-                    if exclude:
-                        parts.append(f"{f}::VARCHAR NOT LIKE '%{v}%'")
-                    else:
-                        parts.append(f"{f}::VARCHAR LIKE '%{v}%'")
-
-            joiner = " AND " if exclude else " OR "
-            where_str = f"({joiner.join(parts)})"
+            where_str = _date_filter_sql(f, values, exclude) or "TRUE"
         else:
             vals = ", ".join([f"'{v}'" for v in escaped])
             not_kw = "NOT " if exclude else ""
@@ -4182,7 +4177,10 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
 
     try:
         if use_duckdb:
+            _t0 = time.time()
+            print(f"[Query] 0. Running main query...")
             df = run_extract_query(sql)
+            print(f"[Query] ✓ Main query returned {len(df):,} rows in {time.time() - _t0:.1f}s")
             results_dir = get_results_dir(_user_email())
             results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4242,8 +4240,9 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                                 if isinstance(global_calcs, dict) else {}
                             )
                             print(f"[Query] 2. Running summary query for fanout deduplication...")
+                            _t1 = time.time()
                             df_summary = run_extract_query(summary_sql)
-                            print(f"[Query] ✓ Summary query returned {len(df_summary)} rows")
+                            print(f"[Query] ✓ Summary query returned {len(df_summary):,} rows in {time.time() - _t1:.1f}s")
                         except Exception as e:
                             print(f"Summary query error: {e}")
                             df_summary = None
