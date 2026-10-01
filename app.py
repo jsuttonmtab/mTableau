@@ -212,6 +212,9 @@ def _load_owner_ws_state(shared_from):
 # ─────────────────────────────────────────────
 
 def _save_worksheets(worksheets, user_email=None):
+    # Default to the signed-in user so a call without user_email can't write the
+    # shared global config (that's how deleted tabs kept coming back).
+    user_email = user_email or _user_email()
     try:
         cfg = load_config(user_email=user_email)
         cfg["worksheets"] = worksheets
@@ -650,54 +653,48 @@ def build_html_table(df, display_df=None, rows=None, max_display=1000):
         style={"position": "sticky", "top": "0", "zIndex": "2"}
     )
 
+    # Body cells are styled by CSS classes (assets/custom.css, "mtab-table") rather
+    # than inline styles: inline styles made every cell ~400 bytes, so a 600 x 65
+    # table was ~16 MB to send and render. Row-wide looks go on the <tr>.
+    #   tr.mt-first / tr.mt-gt      first data row / Grand Total row
+    #   td.mt-r  (+ mt-nv)          row-field cell (+ starts a new value: top border)
+    #   td.mt-fm / td.mt-gtc        first measure column / Grand Total column
+    columns    = list(df.columns)
+    row_set    = set(rows)
+    first_meas = next((i for i, c in enumerate(columns) if i > 0 and c not in row_set
+                       and columns[i - 1] in row_set), None)
+    gt_col     = columns.index("Grand Total") if "Grand Total" in columns else None
+    col_class  = []
+    for i, c in enumerate(columns):
+        cls = []
+        if c in row_set:
+            cls.append("mt-r")
+        if i == first_meas:
+            cls.append("mt-fm")
+        if i == gt_col:
+            cls.append("mt-gtc")
+        col_class.append(" ".join(cls))
+
+    values  = df.astype(object).where(df.notna(), None).values.tolist()
+    shown   = [[("" if v is None else str(v)) for v in r]
+               for r in display_df.reindex(columns=columns).astype(object)
+                                  .where(display_df.reindex(columns=columns).notna(), None).values.tolist()]
     body_rows = []
     prev_vals = {}
-    for idx, row in df.iterrows():
-        is_grand_total = str(row[df.columns[0]]) == "Grand Total"
-        is_first_row   = idx == df.index[0]
+    for r_i, (raw, disp) in enumerate(zip(values, shown)):
+        first_val = "" if raw[0] is None else str(raw[0])
+        tr_cls = "mt-gt" if first_val == "Grand Total" else ("mt-first" if r_i == 0 else None)
         cells = []
-        for col in df.columns:
-            val              = row[col]
-            val_str          = str(val) if val is not None else ""
-            display_val      = str(display_df.loc[idx, col]) if col in display_df.columns else val_str
-            is_row_field     = col in rows
-            col_idx          = list(df.columns).index(col)
-            is_first_measure = col_idx > 0 and col not in rows and df.columns[col_idx - 1] in rows
-            is_new_val       = (
-                idx != 0 and (
-                    not is_row_field or
-                    (val_str != "" and val_str != str(prev_vals.get(col, "")))
-                )
-            )
-            cells.append(html.Td(
-                display_val,
-                style={
-                    "fontSize":        "12px",
-                    "padding":         "3px 10px",
-                    "whiteSpace":      "normal",
-                    "overflow":        "hidden",
-                    "textOverflow":    "ellipsis",
-                    "wordBreak":       "break-word",
-                    "verticalAlign":   "top",
-                    "backgroundColor": "#fff3cd" if is_grand_total else "white",
-                    "fontWeight":      "bold" if is_grand_total else "normal",
-                    "borderTop":       "2px solid #2d6a4f" if is_grand_total
-                                       else "2px solid #adb5bd" if is_first_row
-                                       else "1px solid #adb5bd" if is_new_val
-                                       else "none",
-                    "borderLeft":      "2px solid #adb5bd" if col == "Grand Total"
-                                       else "2px solid #adb5bd" if is_first_measure
-                                       else "none",
-                    "borderRight":     "2px solid #adb5bd" if col == "Grand Total" else "none",
-                    "borderBottom":    "none",
-                    "color":           "#333" if display_val != "" else "transparent",
-                }
-            ))
-        for col in df.columns:
-            v = str(row[col]) if row[col] is not None else ""
-            if v != "":
-                prev_vals[col] = v
-        body_rows.append(html.Tr(cells))
+        for c_i, c in enumerate(columns):
+            cls = col_class[c_i]
+            if c in row_set:
+                v = "" if raw[c_i] is None else str(raw[c_i])
+                if r_i > 0 and v != "" and v != prev_vals.get(c, ""):
+                    cls = cls + " mt-nv"
+                if v != "":
+                    prev_vals[c] = v
+            cells.append(html.Td(disp[c_i], className=cls) if cls else html.Td(disp[c_i]))
+        body_rows.append(html.Tr(cells, className=tr_cls) if tr_cls else html.Tr(cells))
 
     truncation_notice = None
     if truncated:
@@ -3045,7 +3042,7 @@ def execute_delete_worksheet(confirm, cancel, name, worksheets, active_tab):
         return updated, "Worksheet 1", False
 
     updated = [w for w in worksheets if w != name]
-    _save_worksheets(updated)
+    _save_worksheets(updated, user_email=user_email)
     new_active = active_tab
     if active_tab == name:
         idx = worksheets.index(name)
@@ -4476,6 +4473,15 @@ def restore_saved_results(container_ids, restore_complete):
                 ]))
                 continue
 
+            # Same column limit as Run Query (the export has every column)
+            data_cols = [c for c in df.columns if c not in rows]
+            col_note  = ""
+            if len(data_cols) > 20:
+                keep = [c for c in df.columns if c in rows] + data_cols[:20]
+                if "Grand Total" in df.columns and "Grand Total" not in keep:
+                    keep.append("Grand Total")
+                df = df[keep]
+                col_note = f" — showing first 20 of {len(data_cols)} columns. Export for full data."
             display_df = apply_row_blanking(df, rows)
             table      = build_html_table(df, display_df=display_df, rows=rows)
             ws_state   = ws_state_all.get(ws_key, {})
@@ -4487,7 +4493,7 @@ def restore_saved_results(container_ids, restore_complete):
             }
             results.append(html.Div([
                 html.Div([
-                    html.Span(f"{len(display_df):,} rows — saved result",
+                    html.Span(f"{len(display_df):,} rows — saved result{col_note}",
                              className="text-muted fst-italic",
                              style={"fontSize": "11px"}),
                     html.Div([
