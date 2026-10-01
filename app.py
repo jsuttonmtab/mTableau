@@ -874,6 +874,27 @@ def apply_pivot(df, rows, cols, col_total="last", row_total="first", df_summary=
     return df
 
 
+def _is_zero(val):
+    """True for numeric zero (0, 0.0, numpy zeros); text and blanks are not zero."""
+    if isinstance(val, bool) or val is None or isinstance(val, str):
+        return False
+    try:
+        return float(val) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _blank_zeros(df, keep_cols):
+    """Copy of df with numeric zeros blanked in every column except keep_cols."""
+    out = df.copy()
+    for c in out.columns:
+        if c in keep_cols:
+            continue
+        num = pd.to_numeric(out[c], errors="coerce")
+        out[c] = out[c].astype(object).where(~(num == 0), None)
+    return out
+
+
 def _formula_sql_column(name):
     """SQL column for a field named in a formula (case-insensitive), or None."""
     from utils.query_engine import FIELD_REGISTRY
@@ -2694,6 +2715,49 @@ app.clientside_callback(
     Output("ws-dirty-sink", "data"),
     Input("ws-dirty", "data"),
 )
+
+@app.callback(
+    Output("ws-saved-snapshot", "data", allow_duplicate=True),
+    Input({"type": "run-query-btn", "index": ALL}, "n_clicks"),
+    State("ws-saved-snapshot", "data"),
+    State({"type": "ws-rows",          "index": ALL}, "data"),
+    State({"type": "ws-cols",          "index": ALL}, "data"),
+    State({"type": "ws-filters",       "index": ALL}, "data"),
+    State({"type": "ws-field-filters", "index": ALL}, "data"),
+    State({"type": "ws-date-formats",  "index": ALL}, "data"),
+    State({"type": "ws-measure",       "index": ALL}, "data"),
+    prevent_initial_call=True,
+)
+def save_on_run(n_clicks, snapshot, *_stores):
+    """Running a query also saves that tab (it runs alongside run_worksheet_query)."""
+    trig = ctx.triggered_id
+    if not trig:
+        raise dash.exceptions.PreventUpdate
+    i = next((k for k, item in enumerate(ctx.inputs_list[0])
+              if item["id"]["index"] == trig["index"]), None)
+    if i is None or not n_clicks or not n_clicks[i]:       # created, not clicked
+        raise dash.exceptions.PreventUpdate
+    ws_key, user_email = trig["index"], _user_email()
+    if _is_readonly_ws(ws_key, user_email):
+        raise dash.exceptions.PreventUpdate                  # received tabs aren't saved
+    state = _ws_states_from_context(ctx.states_list[1:7]).get(ws_key)
+    if state is None:
+        raise dash.exceptions.PreventUpdate
+    try:
+        cfg = load_config(user_email=user_email)
+        entry = cfg.setdefault("ws_state", {}).get(ws_key, {})
+        entry.update({p: state.get(p) for p in _WS_STATE_PARTS})
+        entry.pop("shared_from", None)
+        cfg["ws_state"][ws_key] = entry
+        save_config(cfg, user_email=user_email)
+    except Exception as e:
+        print(f"[Save] ERROR saving {ws_key} on run: {e}")
+        raise dash.exceptions.PreventUpdate
+    snapshot = dict(snapshot or {})
+    snapshot[ws_key] = state
+    print(f"[Save] {user_email or 'desktop'} saved '{ws_key}' (query run)")
+    return snapshot
+
 
 # Tab menu → Save: carries the right-clicked tab's name (it may not be active).
 app.clientside_callback(
@@ -4563,7 +4627,7 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
 
         import io
         output = io.BytesIO()
-        df.to_excel(output, index=False)
+        _blank_zeros(df, keep_cols=set(rows)).to_excel(output, index=False)   # 0 → blank
         output.seek(0)
         return dcc.send_bytes(
             output.getvalue(),
@@ -4700,8 +4764,9 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
                 val = row[col_name]
                 if col_name not in rows:
                     val = df.iloc[row_idx - 2][col_name] if row_idx - 2 < len(df) else val
-                cell = ws.cell(row=row_idx, column=col_idx,
-                               value=None if str(val) == "" else val)
+                if str(val) == "" or (col_name not in rows and _is_zero(val)):
+                    val = None                                   # 0 → blank
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
                 cell.font      = bold_font if is_gt else normal_font
                 cell.alignment = left_align if col_name in rows else center_align
                 cell.border    = thin_border
