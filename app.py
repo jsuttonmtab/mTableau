@@ -914,7 +914,7 @@ def _plan_formula_fields(all_fields, global_calcs):
             node = _parse(formula)
         except FormulaError as e:
             print(f"[Query] calculation '{name}' has an invalid formula: {e}")
-            continue
+            continue   # computed (and reported) as an error by _apply_formulas
         if node[0] == "call" and node[1] == "FIXED":
             args = node[2]
             agg = args[0][1].upper()
@@ -935,7 +935,7 @@ def _plan_formula_fields(all_fields, global_calcs):
 
 
 def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
-                    rows, cols, measure, global_calcs):
+                    rows, cols, measure, global_calcs, errors=None):
     """Add formula columns to a query result, then drop helper fields and re-combine
     rows that only differed by them (so the result is at the shelves' grain)."""
     calcs = global_calcs if isinstance(global_calcs, dict) else {}
@@ -946,6 +946,8 @@ def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
             df[f] = apply_calculation(formula, df)
         except Exception as e:
             print(f"[Query] calculation '{f}' failed: {e}")
+            if errors is not None:
+                errors.append(f"{f}: {e}")
             df[f] = None
     for f, (agg, value, dim, fmt) in fixed_specs.items():
         try:
@@ -961,7 +963,14 @@ def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
             print(f"[Query] FIXED '{f}': {agg}({value}) per {dim} from {len(side):,} rows")
         except Exception as e:
             print(f"[Query] FIXED calculation '{f}' failed: {e}")
+            if errors is not None:
+                errors.append(f"{f}: {e}")
             df[f] = None
+    # Empty calc values must not make the pivot drop whole rows (pandas pivots
+    # skip rows whose row/column labels are empty).
+    for f in formula_calcs:
+        if f in df.columns and (f in rows or f in cols):
+            df[f] = df[f].astype(object).where(df[f].notna(), "")
     drop = [e for e in extra_fields if e in df.columns and e not in rows and e not in cols]
     if drop:
         df = df.drop(columns=drop)
@@ -4118,8 +4127,15 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             results_dir.mkdir(parents=True, exist_ok=True)
 
             # Formula columns + re-combine rows split only by helper fields
+            calc_errors = []
             df = _apply_formulas(df, formula_calcs, fixed_specs, formula_extra_fields,
-                                 duck_where, rows, cols, measure, global_calcs)
+                                 duck_where, rows, cols, measure, global_calcs,
+                                 errors=calc_errors)
+            if calc_errors:
+                warning = dbc.Alert(
+                    ["⚠️ Some calculations couldn't be computed and are left blank: ",
+                     html.Span("; ".join(calc_errors), style={"fontFamily": "monospace"})],
+                    color="warning", className="mb-2 py-1", style={"fontSize": "12px"})
             # Save results AFTER formulas are applied (so exports match the tab)
             print(f"[Query] 1. Saving {len(df):,} rows to parquet...")
             try:

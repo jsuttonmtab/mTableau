@@ -224,10 +224,21 @@ class _Parser:
         return ("if", branches, else_val)
 
 
+_FIXED_UNQUOTED_FMT = re.compile(
+    r"^\s*(FIXED\s*\(\s*\w+\s*,\s*[^,()]+?\s*,\s*[^,()]+?\s*,)\s*([^'\"\s].*?)\s*\)\s*$",
+    re.IGNORECASE | re.DOTALL)
+
+
 def parse(formula):
     if not formula or not str(formula).strip():
         raise FormulaError("Please enter a formula.")
-    node = _Parser(str(formula)).parse()
+    text = str(formula)
+    # The original FIXED syntax allowed an unquoted date format as the 4th
+    # argument, e.g. FIXED(MAX, ACTION_DATE, USER_NAME, %b %d, %Y). Keep accepting it.
+    m = _FIXED_UNQUOTED_FMT.match(text)
+    if m:
+        text = m.group(1) + " '" + m.group(2).replace("'", "''") + "')"
+    node = _Parser(text).parse()
     _check_calls(node)
     return node
 
