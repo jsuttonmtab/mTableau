@@ -1,4 +1,103 @@
 // ─────────────────────────────────────────────
+// Tab names, unsaved-change dots, shared-tab icons
+// ─────────────────────────────────────────────
+// Tab labels get decorations (a dot for unsaved changes, an icon for tabs shared
+// with you). Always read a tab's name with mtTabName(), which ignores them.
+
+window.mtTabName = function(tab) {
+    if (!tab) return '';
+    const c = tab.cloneNode(true);
+    c.querySelectorAll('.mt-deco').forEach(function(n) { n.remove(); });
+    return c.textContent.trim();
+};
+
+window.mtWsKey = function(name) { return (name || '').replace(/ /g, '_'); };
+
+window.mtActiveTabName = function() {
+    return window.mtTabName(document.querySelector('.custom-tabs .tab--selected'));
+};
+
+window.mtDecorateTabs = function() {
+    const dirty  = window._dirtyWs || [];
+    const shared = window._sharedWsNames || [];
+    const owners = window._sharedWsOwners || {};
+    document.querySelectorAll('.custom-tabs .tab').forEach(function(tab) {
+        const name = window.mtTabName(tab);
+        const wantIcon = shared.indexOf(name) !== -1;
+        const wantDot  = dirty.indexOf(window.mtWsKey(name)) !== -1;
+        let icon = tab.querySelector('.mt-shared-icon');
+        let dot  = tab.querySelector('.mt-dirty-dot');
+        if (wantIcon && !icon) {
+            icon = document.createElement('i');
+            icon.className = 'bi bi-people-fill mt-deco mt-shared-icon';
+            icon.style.cssText = 'margin-right:5px;font-size:11px;color:#6c757d;';
+            tab.insertBefore(icon, tab.firstChild);
+        }
+        if (icon) {
+            if (!wantIcon) icon.remove();
+            else icon.title = 'Shared by ' + (owners[name] || 'another user') + ' (read-only)';
+        }
+        if (wantDot && !dot) {
+            dot = document.createElement('span');
+            dot.className = 'mt-deco mt-dirty-dot';
+            dot.textContent = ' \u25CF';
+            dot.title = 'Unsaved changes';
+            dot.style.cssText = 'color:#fd7e14;font-size:10px;margin-left:3px;';
+            tab.appendChild(dot);
+        }
+        if (dot && !wantDot) dot.remove();
+    });
+};
+
+setTimeout(function() {
+    // Dash re-renders the tab bar on add/rename/delete; re-apply decorations.
+    let pending = false;
+    new MutationObserver(function() {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(function() { pending = false; window.mtDecorateTabs(); });
+    }).observe(document.body, {childList: true, subtree: true});
+    window.mtDecorateTabs();
+}, 500);
+
+// Switching away from a tab with unsaved changes asks first. Runs in the capture
+// phase so it sees the click before Dash does.
+document.addEventListener('click', function(e) {
+    const tab = e.target.closest && e.target.closest('.custom-tabs .tab');
+    if (!tab) return;
+    const rect = tab.getBoundingClientRect();
+    if (e.clientX - rect.left > rect.width - 24) return;   // the × delete zone
+    const target = window.mtTabName(tab);
+    const active = window.mtActiveTabName();
+    if (!active || target === active) return;
+    if ((window._dirtyWs || []).indexOf(window.mtWsKey(active)) === -1) return;
+    e.stopPropagation(); e.preventDefault();
+    window._pendingTab = target;
+    const btn = document.getElementById('unsaved-trigger-btn');
+    if (btn) btn.click();
+}, true);
+
+// Ctrl+S / Cmd+S saves the active tab.
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        const btn = document.getElementById('save-btn');
+        if (btn && !btn.disabled) btn.click();
+    }
+}, true);
+
+// Closing, refreshing or leaving the page (including Logout) with unsaved tabs
+// shows the browser's own "Leave site?" warning.
+window.addEventListener('beforeunload', function(e) {
+    if ((window._dirtyWs || []).length) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    }
+});
+
+
+// ─────────────────────────────────────────────
 // Tab × button positioning
 // ─────────────────────────────────────────────
 
@@ -67,7 +166,7 @@ setTimeout(function() {
             // For received tabs (data-shared="1"), hide Sharing, Rename, Settings
             // Check if tab is shared (received) by checking window._sharedWsNames
             const sharedNames = window._sharedWsNames || [];
-            const tabName = tab.textContent.trim();
+            const tabName = window.mtTabName(tab);
             const isShared = sharedNames.includes(tabName);
 
             const ctxShareCopy = document.getElementById('ctx-share-copy');
@@ -106,7 +205,7 @@ setTimeout(function() {
     if (ctxRename) {
         ctxRename.addEventListener('click', function() {
             if (!targetTab) return;
-            const currentName = targetTab.textContent.trim();
+            const currentName = window.mtTabName(targetTab);
             hideTabMenu();
         
         // Create overlay dialog
@@ -158,7 +257,7 @@ setTimeout(function() {
     if (ctxDuplicate) {
         ctxDuplicate.addEventListener('click', function() {
         if (!targetTab) return;
-        const tabName = targetTab.textContent.trim(); hideTabMenu();
+        const tabName = window.mtTabName(targetTab); hideTabMenu();
         window._dashDupePayload = tabName;
         const btn = document.getElementById('dupe-trigger-btn');
         if (btn) btn.click();
@@ -169,7 +268,7 @@ setTimeout(function() {
     if (ctxSettings) {
         ctxSettings.addEventListener('click', function() {
         if (!targetTab) return;
-        const tabName = targetTab.textContent.trim(); hideTabMenu();
+        const tabName = window.mtTabName(targetTab); hideTabMenu();
         window._dashWsSettingsPayload = tabName;
         const btn = document.getElementById('ws-settings-trigger-btn');
         if (btn) btn.click();
@@ -180,7 +279,7 @@ setTimeout(function() {
     if (ctxShowSql) {
         ctxShowSql.addEventListener('click', function() {
             if (!targetTab) return;
-            const tabName = targetTab.textContent.trim(); hideTabMenu();
+            const tabName = window.mtTabName(targetTab); hideTabMenu();
             window._dashShowSqlPayload = tabName;
             const btn = document.getElementById('show-sql-trigger-btn');
             if (btn) btn.click();
@@ -191,7 +290,7 @@ setTimeout(function() {
     if (ctxShareCopy) {
         ctxShareCopy.addEventListener('click', function() {
             if (!targetTab) return;
-            const tabName = targetTab.textContent.trim(); hideTabMenu();
+            const tabName = window.mtTabName(targetTab); hideTabMenu();
             window._dashShareWsPayload = tabName;
             const btn = document.getElementById('share-ws-trigger-btn');
             if (btn) btn.click();
@@ -528,7 +627,7 @@ setTimeout(function() {
         const clickX = e.clientX - rect.left;
         if (clickX > rect.width - 24) {
             e.stopPropagation(); e.preventDefault();
-            window._dashDeletePayload = tab.textContent.trim();
+            window._dashDeletePayload = window.mtTabName(tab);
             const btn = document.getElementById('delete-ws-trigger-btn');
             if (btn) btn.click();
         }

@@ -257,6 +257,21 @@ def _duplicate_ws_state(src_name, dst_name, user_email=None):
             if src_file.exists():
                 shutil.copy2(src_file, dst_file)
         cfg = load_config(user_email=user_email)
+        src_state   = cfg.get("ws_state", {}).get(src_key, {})
+        shared_from = src_state.get("shared_from")
+        if shared_from:
+            # A received tab only stores a pointer to the owner's worksheet: copy
+            # the owner's current layout (and the owner's calcs it may use).
+            owner_state = _load_owner_ws_state(shared_from) or {}
+            cfg.setdefault("ws_state", {})[dst_key] = copy.deepcopy(owner_state)
+            cfg["ws_state"][dst_key].pop("shared_from", None)
+            cfg["ws_state"][dst_key].pop("shared_log", None)
+            owner_cfg = load_config(user_email=shared_from.get("owner_email"))
+            mine = cfg.setdefault("global_calculations", {})
+            for name, defn in owner_cfg.get("global_calculations", {}).items():
+                mine.setdefault(name, copy.deepcopy(defn))
+            save_config(cfg, user_email=user_email)
+            return
         for key in ["ws_state", "ws_settings"]:
             store = cfg.get(key, {})
             if src_key in store:
@@ -270,6 +285,45 @@ def _duplicate_ws_state(src_name, dst_name, user_email=None):
         save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not duplicate ws state: {e}")
+
+
+_WS_STATE_PARTS = ("rows", "cols", "filters", "field_filters", "date_formats", "measure")
+
+
+def _ws_states_from_context(groups):
+    """
+    Turn six ALL-pattern groups (rows, cols, filters, field_filters, date_formats,
+    measure; from ctx.states_list or ctx.inputs_list) into {ws_key: state}.
+    """
+    out = {}
+    for part, group in zip(_WS_STATE_PARTS, groups):
+        for item in group or []:
+            key = item["id"]["index"]
+            out.setdefault(key, {})[part] = item.get("value")
+    return out
+
+
+def _too_large_placeholder(n_rows):
+    return html.Div([
+        html.Div([
+            html.I(className="bi bi-table",
+                   style={"fontSize": "24px", "marginBottom": "8px", "color": "#6c757d"}),
+            html.Div(f"{n_rows:,} rows — too large to auto-load.",
+                     style={"fontSize": "13px", "fontWeight": "bold", "color": "#555"}),
+            html.Div("Click Run Query to load results.",
+                     style={"fontSize": "11px", "color": "#888", "marginTop": "4px"}),
+        ], style={"textAlign": "center", "padding": "60px 30px"})
+    ])
+
+
+def _meta_matches_state(meta, state):
+    """True if a saved result was produced by this (saved) worksheet definition."""
+    if not state:
+        return True   # nothing saved to compare against: keep old behaviour
+    for part in ("rows", "cols", "date_formats", "measure", "field_filters"):
+        if part in meta and meta.get(part) != state.get(part, meta.get(part)):
+            return False
+    return True
 
 
 def _save_ws_state(ws_key, rows, cols, filters, field_filters, date_formats, measure, user_email=None):
@@ -1040,14 +1094,17 @@ def _get_layout():
         merged_calcs = personal_calcs
 
     # Build list of shared worksheet names for client-side menu control
-    shared_ws_names = []
+    shared_ws_names  = []
+    shared_ws_owners = {}
     if IS_WEB and user_email:
         ws_state = config.get("ws_state", {})
-        for ws_key, state in ws_state.items():
-            if state.get("shared_from"):
-                ws_name = ws_key.replace("_", " ")
-                if ws_name in current_worksheets:
-                    shared_ws_names.append(ws_name)
+        for ws_name in current_worksheets:
+            sf = (ws_state.get(ws_name.replace(" ", "_")) or {}).get("shared_from")
+            if sf:
+                shared_ws_names.append(ws_name)
+                owner = get_user(sf.get("owner_email", "")) if HAS_AUTH else None
+                shared_ws_owners[ws_name] = (getattr(owner, "name", None)
+                                             or sf.get("owner_email", "someone"))
 
     return html.Div([
     dcc.Location(id="url", refresh=True),
@@ -1073,12 +1130,33 @@ def _get_layout():
     dcc.Store(id="sql-display-payload",    data=""),
     dcc.Store(id="share-ws-payload",       data=""),
     dcc.Store(id="shared-ws-names",        data=shared_ws_names),
+    dcc.Store(id="shared-ws-owners",       data=shared_ws_owners),
     dcc.Store(id="shared-ws-names-sink",   data=0),
     dcc.Download(id="download-data"),
     dcc.Download(id="download-crosstab"),
 
     html.Button(id="rename-trigger-btn",        style={"display": "none"}),
     html.Button(id="share-ws-trigger-btn",      style={"display": "none"}),
+    # ── Manual save / unsaved-changes tracking ──
+    dcc.Store(id="ws-saved-snapshot",      data={}),   # {ws_key: last saved/loaded state}
+    dcc.Store(id="ws-dirty",               data=[]),   # [ws_key] with unsaved changes
+    dcc.Store(id="unsaved-pending",        data=""),   # tab the user tried to switch to
+    dcc.Store(id="ws-dirty-sink",          data=0),
+    dcc.Store(id="save-btn-sink",          data=0),
+    html.Button(id="unsaved-trigger-btn",       style={"display": "none"}),
+    dbc.Modal([
+        dbc.ModalHeader("Unsaved changes"),
+        dbc.ModalBody(id="unsaved-modal-body"),
+        dbc.ModalFooter([
+            dbc.Button("Save", id="unsaved-save-btn", color="primary", size="sm"),
+            dbc.Button("Don't save", id="unsaved-discard-btn", color="outline-danger", size="sm"),
+            dbc.Button("Cancel", id="unsaved-cancel-btn", color="secondary", size="sm"),
+        ]),
+    ], id="unsaved-modal", is_open=False, centered=True, backdrop="static"),
+    dbc.Toast(id="save-toast", header="Saved", is_open=False, dismissable=True,
+              duration=2500, icon="success",
+              style={"position": "fixed", "top": 60, "right": 16, "zIndex": 2000,
+                     "minWidth": "220px", "fontSize": "12px"}),
     html.Button(id="drop-trigger-btn",          style={"display": "none"}),
     html.Button(id="dupe-trigger-btn",          style={"display": "none"}),
     html.Button(id="ws-settings-trigger-btn",   style={"display": "none"}),
@@ -1444,6 +1522,9 @@ def _get_layout():
                            id="signed-in-as", title=f"Signed in as {current_user.email}",
                            className="text-white-50 me-3", style={"fontSize": "12px"})
                  if IS_WEB else None),
+                dbc.Button(html.I(className="bi bi-floppy"), id="save-btn",
+                           color="light", size="sm", className="me-2",
+                           title="Save tab (Ctrl+S)"),
                 (dbc.Button(html.I(className="bi bi-people-fill"), id="users-btn",
                            color="light", size="sm", className="me-2", title="Users")
                  if IS_WEB and current_user.is_admin else None),
@@ -2054,6 +2135,33 @@ def restore_tabs(worksheets, current_value):
     return tabs, active
 
 
+def _saved_ws_state_for(ws_state, ws_key):
+    """A worksheet's saved definition, normalised the way the stores hold it.
+    Received tabs resolve to the owner's live definition."""
+    state = ws_state.get(ws_key, {})
+    shared_from = state.get("shared_from")
+    if shared_from:
+        state = _load_owner_ws_state(shared_from) or state
+    field_filters = {
+        k: ({"values": [v.strip() for v in vals.get("values", [])],
+             "exclude": vals.get("exclude", False)}
+            if isinstance(vals, dict)
+            else [v.strip() for v in vals])
+        for k, vals in state.get("field_filters", {}).items()
+    }
+    saved_filters = state.get("filters", [])
+    if not saved_filters and field_filters:
+        saved_filters = sorted(set(k.split("|")[-1] for k in field_filters.keys()))
+    return {
+        "rows":          state.get("rows", []),
+        "cols":          state.get("cols", []),
+        "filters":       saved_filters,
+        "field_filters": field_filters,
+        "date_formats":  state.get("date_formats", {}),
+        "measure":       state.get("measure", "COUNTD_USAGE_ID"),
+    }
+
+
 @app.callback(
     Output({"type": "ws-rows",          "index": ALL}, "data", allow_duplicate=True),
     Output({"type": "ws-cols",          "index": ALL}, "data", allow_duplicate=True),
@@ -2061,47 +2169,57 @@ def restore_tabs(worksheets, current_value):
     Output({"type": "ws-field-filters", "index": ALL}, "data", allow_duplicate=True),
     Output({"type": "ws-date-formats",  "index": ALL}, "data", allow_duplicate=True),
     Output({"type": "ws-measure",       "index": ALL}, "data", allow_duplicate=True),
+    Output("ws-saved-snapshot", "data", allow_duplicate=True),
     Input("worksheet-store", "data"),
+    # Also run when tab components appear: on page load the tab area is often
+    # built *after* the first run, which used to leave tabs empty.
+    Input({"type": "ws-rows", "index": ALL}, "id"),
+    State("ws-dirty", "data"),
+    State("ws-saved-snapshot", "data"),
+    State({"type": "ws-rows",          "index": ALL}, "data"),
+    State({"type": "ws-cols",          "index": ALL}, "data"),
+    State({"type": "ws-filters",       "index": ALL}, "data"),
+    State({"type": "ws-field-filters", "index": ALL}, "data"),
+    State({"type": "ws-date-formats",  "index": ALL}, "data"),
+    State({"type": "ws-measure",       "index": ALL}, "data"),
     prevent_initial_call='initial_duplicate'
 )
-def restore_ws_state(worksheets):
-    if not worksheets:
-        worksheets = ["Worksheet 1"]
-    user_email = _user_email()
-    cfg      = load_config(user_email=user_email)
-    ws_state = cfg.get("ws_state", {})
-    rows_out, cols_out, filters_out = [], [], []
-    field_filters_out, date_formats_out, measure_out = [], [], []
-    for w in worksheets:
-        ws_key        = w.replace(" ", "_")
-        state         = ws_state.get(ws_key, {})
+def restore_ws_state(worksheets, _store_ids, dirty, old_snapshot, *_current):
+    """
+    Fill each tab's stores from its saved definition and record that as the
+    tab's snapshot (what "unsaved changes" are measured against).
 
-        # Load live owner state for received tabs
-        shared_from = state.get("shared_from")
-        if shared_from:
-            owner_state = _load_owner_ws_state(shared_from)
-            if owner_state:
-                state = owner_state  # Use owner's state, not recipient's empty state
-        field_filters = state.get("field_filters", {})
-        # Strip \r from any saved filter values
-        field_filters = {
-            k: ({"values": [v.strip() for v in vals.get("values", [])],
-                 "exclude": vals.get("exclude", False)}
-                if isinstance(vals, dict)
-                else [v.strip() for v in vals])
-            for k, vals in field_filters.items()
-        }
-        saved_filters = state.get("filters", [])
-        if not saved_filters and field_filters:
-            saved_filters = list(set(k.split("|")[-1] for k in field_filters.keys()))
-        rows_out.append(state.get("rows", []))
-        cols_out.append(state.get("cols", []))
-        filters_out.append(saved_filters)
-        field_filters_out.append(field_filters)
-        date_formats_out.append(state.get("date_formats", {}))
-        measure_out.append(state.get("measure", "COUNTD_USAGE_ID"))
-    return (rows_out, cols_out, filters_out,
-            field_filters_out, date_formats_out, measure_out)
+    - A tab is filled once, the first time its stores exist; the snapshot lists
+      the tabs already filled.
+    - When the tab list itself changes (add / rename / delete / duplicate), tabs
+      are refilled from disk, except tabs with unsaved changes, which keep what
+      is on screen.
+    """
+    dirty        = set(dirty or [])
+    old_snapshot = old_snapshot or {}
+    structural   = ctx.triggered_id in (None, "worksheet-store")
+    current      = _ws_states_from_context(ctx.states_list[2:8])
+    ws_state     = load_config(user_email=_user_email()).get("ws_state", {})
+
+    snapshot, shown_by_key = {}, {}
+    for item in ctx.outputs_list[0]:              # tabs whose stores exist now
+        key = item["id"]["index"]
+        if key in old_snapshot and not structural:
+            snapshot[key] = old_snapshot[key]          # already filled: leave it
+        elif key in old_snapshot and key in dirty and key in current:
+            snapshot[key] = old_snapshot[key]          # keep unsaved edits
+            shown_by_key[key] = current[key]
+        else:
+            snapshot[key] = shown_by_key[key] = _saved_ws_state_for(ws_state, key)
+
+    outs = []
+    for part, group in zip(_WS_STATE_PARTS, ctx.outputs_list[:6]):
+        outs.append([shown_by_key[item["id"]["index"]][part]
+                     if item["id"]["index"] in shown_by_key else dash.no_update
+                     for item in group])
+    if not shown_by_key and snapshot == old_snapshot:
+        raise dash.exceptions.PreventUpdate
+    return (*outs, snapshot)
 
 
 @app.callback(
@@ -2137,34 +2255,15 @@ def restore_ws_settings(worksheets):
     prevent_initial_call=True
 )
 def show_active_worksheet(active_tab, worksheets, current_children):
-    if not worksheets:
-        worksheets = ["Worksheet 1"]
-
-    print(f"[Tab Switch] active_tab={active_tab}")
-    print(f"[Tab Switch] worksheets={worksheets}")
-    print(f"[Tab Switch] current_children count={len(current_children) if current_children else 0}")
-
-    # Debug: Get the actual pattern-matched indices for ws-wrapper from context
-    # The order Dash uses might differ from worksheet order
-    if hasattr(ctx, 'outputs_list'):
-        wrapper_indices = []
-        for outputs in ctx.outputs_list:
-            for output in outputs:
-                if isinstance(output.get('id'), dict) and output['id'].get('type') == 'ws-wrapper':
-                    wrapper_indices.append(output['id'].get('index'))
-        if wrapper_indices:
-            print(f"[Tab Switch] ws-wrapper indices in DOM order: {wrapper_indices}")
-
-    styles = []
-    for i, w in enumerate(worksheets):
-        visible = "block" if w == active_tab else "none"
-        styles.append({"height": "100%", "display": visible})
-        print(f"[Tab Switch] {i}: {w} -> {visible}")
-
-    # IMPORTANT: Do NOT load or process any data on tab switch.
-    # Just change display styles. Data was already loaded by restore_saved_results on startup.
-    # If user needs to load saved results, they'll click Run Query.
-    return styles, [dash.no_update] * len(worksheets)
+    """Show the active tab's area and hide the rest. Matched by key, not position:
+    the rendered wrappers can briefly differ from the saved worksheet list
+    (e.g. right after adding or duplicating a tab)."""
+    active_key = (active_tab or "").replace(" ", "_")
+    styles = [{"height": "100%",
+               "display": "block" if item["id"]["index"] == active_key else "none"}
+              for item in ctx.outputs_list[0]]
+    # Only toggles visibility; results were placed by restore_saved_results / Run Query.
+    return styles, [dash.no_update] * len(ctx.outputs_list[1])
 
 def _build_saved_result(ws_key):
     """Build the HTML table for a single saved worksheet result. Skip large results."""
@@ -2408,6 +2507,220 @@ def duplicate_from_readonly(n_clicks, active_tab, worksheets):
 
 
 # ─────────────────────────────────────────────
+# Manual save & unsaved-changes tracking
+# ─────────────────────────────────────────────
+# A tab is "dirty" when its current stores differ from ws-saved-snapshot (the
+# state last loaded from or saved to disk). Nothing is written until Save.
+
+app.clientside_callback(
+    """
+    function(rows, cols, filters, ffilters, dfmts, measures, snapshot) {
+        const ctx = window.dash_clientside.callback_context;
+        const canon = function(v) {
+            if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+            if (v && typeof v === 'object')
+                return '{' + Object.keys(v).sort().map(function(k) {
+                    return JSON.stringify(k) + ':' + canon(v[k]); }).join(',') + '}';
+            return JSON.stringify(v === undefined ? null : v);
+        };
+        const groups = [rows, cols, filters, ffilters, dfmts, measures];
+        const parts  = ['rows', 'cols', 'filters', 'field_filters', 'date_formats', 'measure'];
+        const ids    = ctx.inputs_list[0] || [];
+        const dirty  = [];
+        snapshot = snapshot || {};
+        ids.forEach(function(item, i) {
+            const key = item.id.index;
+            if (!(key in snapshot)) return;
+            const cur = {};
+            parts.forEach(function(p, g) { cur[p] = (groups[g] || [])[i]; });
+            if (canon(cur) !== canon(snapshot[key])) dirty.push(key);
+        });
+        window._dirtyWs = dirty;
+        if (window.mtDecorateTabs) window.mtDecorateTabs();
+        return dirty;
+    }
+    """,
+    Output("ws-dirty", "data"),
+    Input({"type": "ws-rows",          "index": ALL}, "data"),
+    Input({"type": "ws-cols",          "index": ALL}, "data"),
+    Input({"type": "ws-filters",       "index": ALL}, "data"),
+    Input({"type": "ws-field-filters", "index": ALL}, "data"),
+    Input({"type": "ws-date-formats",  "index": ALL}, "data"),
+    Input({"type": "ws-measure",       "index": ALL}, "data"),
+    Input("ws-saved-snapshot", "data"),
+)
+
+app.clientside_callback(
+    """
+    function(dirty) {
+        window._dirtyWs = dirty || [];
+        if (window.mtDecorateTabs) window.mtDecorateTabs();
+        return Date.now();
+    }
+    """,
+    Output("ws-dirty-sink", "data"),
+    Input("ws-dirty", "data"),
+)
+
+# Save is unavailable on received (read-only) tabs.
+app.clientside_callback(
+    """
+    function(active, shared, owners) {
+        window._sharedWsNames  = shared || [];
+        window._sharedWsOwners = owners || {};
+        if (window.mtDecorateTabs) window.mtDecorateTabs();
+        return (shared || []).indexOf(active) !== -1;
+    }
+    """,
+    Output("save-btn", "disabled"),
+    Input("worksheet-tabs", "value"),
+    Input("shared-ws-names", "data"),
+    Input("shared-ws-owners", "data"),
+)
+
+# The browser intercepts tab clicks while the current tab has unsaved changes and
+# clicks unsaved-trigger-btn with the destination in window._pendingTab.
+app.clientside_callback(
+    """
+    function(n, active) {
+        if (!n) return window.dash_clientside.no_update;
+        return [window._pendingTab || "",
+                "'" + active + "' has unsaved changes.",
+                true];
+    }
+    """,
+    Output("unsaved-pending",    "data"),
+    Output("unsaved-modal-body", "children"),
+    Output("unsaved-modal",      "is_open", allow_duplicate=True),
+    Input("unsaved-trigger-btn", "n_clicks"),
+    State("worksheet-tabs", "value"),
+    prevent_initial_call=True,
+)
+
+
+@app.callback(
+    Output("unsaved-modal", "is_open", allow_duplicate=True),
+    Input("unsaved-cancel-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def cancel_unsaved(n):
+    return False
+
+
+@app.callback(
+    Output("ws-saved-snapshot", "data", allow_duplicate=True),
+    Output("worksheet-tabs",    "value", allow_duplicate=True),
+    Output("unsaved-modal",     "is_open", allow_duplicate=True),
+    Output("ws-readonly-modal", "is_open", allow_duplicate=True),
+    Output("save-toast", "children"),
+    Output("save-toast", "is_open"),
+    Output("save-toast", "header"),
+    Output("save-toast", "icon"),
+    Input("save-btn", "n_clicks"),
+    Input("unsaved-save-btn", "n_clicks"),
+    State("worksheet-tabs", "value"),
+    State("unsaved-pending", "data"),
+    State("ws-saved-snapshot", "data"),
+    State({"type": "ws-rows",          "index": ALL}, "data"),
+    State({"type": "ws-cols",          "index": ALL}, "data"),
+    State({"type": "ws-filters",       "index": ALL}, "data"),
+    State({"type": "ws-field-filters", "index": ALL}, "data"),
+    State({"type": "ws-date-formats",  "index": ALL}, "data"),
+    State({"type": "ws-measure",       "index": ALL}, "data"),
+    prevent_initial_call=True,
+)
+def save_active_tab(n_save, n_modal_save, active, pending, snapshot, *_stores):
+    if not active or not (n_save or n_modal_save):
+        raise dash.exceptions.PreventUpdate
+    from_modal = ctx.triggered_id == "unsaved-save-btn"
+    switch_to  = pending if (from_modal and pending) else dash.no_update
+    ws_key     = active.replace(" ", "_")
+    user_email = _user_email()
+
+    if _is_readonly_ws(active, user_email):
+        return (dash.no_update, switch_to, False, not from_modal,
+                dash.no_update, False, dash.no_update, dash.no_update)
+
+    state = _ws_states_from_context(ctx.states_list[3:9]).get(ws_key)
+    if state is None:
+        raise dash.exceptions.PreventUpdate
+    try:
+        cfg = load_config(user_email=user_email)
+        entry = cfg.setdefault("ws_state", {}).get(ws_key, {})
+        entry.update({p: state.get(p) for p in _WS_STATE_PARTS})
+        entry.pop("shared_from", None)
+        cfg["ws_state"][ws_key] = entry
+        save_config(cfg, user_email=user_email)
+    except Exception as e:
+        print(f"[Save] ERROR saving {ws_key}: {e}")
+        return (dash.no_update, dash.no_update, False, False,
+                f"Could not save '{active}': {e}", True, "Save failed", "danger")
+
+    snapshot = dict(snapshot or {})
+    snapshot[ws_key] = state
+    print(f"[Save] {user_email or 'desktop'} saved '{active}'")
+    return (snapshot, switch_to, False, False,
+            f"'{active}' saved.", True, "Saved", "success")
+
+
+@app.callback(
+    Output({"type": "ws-rows",          "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-cols",          "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-filters",       "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-field-filters", "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-date-formats",  "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-measure",       "index": ALL}, "data", allow_duplicate=True),
+    Output("worksheet-tabs", "value", allow_duplicate=True),
+    Output("unsaved-modal",  "is_open", allow_duplicate=True),
+    Input("unsaved-discard-btn", "n_clicks"),
+    State("worksheet-tabs", "value"),
+    State("unsaved-pending", "data"),
+    State("ws-saved-snapshot", "data"),
+    prevent_initial_call=True,
+)
+def discard_active_tab(n, active, pending, snapshot):
+    """Don't save: put the tab back to its saved state, then switch."""
+    if not n or not active:
+        raise dash.exceptions.PreventUpdate
+    saved = (snapshot or {}).get(active.replace(" ", "_"))
+    outs = []
+    for part, group in zip(_WS_STATE_PARTS, ctx.outputs_list[:6]):
+        outs.append([saved.get(part) if (saved and item["id"]["index"] == active.replace(" ", "_"))
+                     else dash.no_update for item in group])
+    return (*outs, pending or dash.no_update, False)
+
+
+@app.callback(
+    Output({"type": "ws-rows",          "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-cols",          "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-filters",       "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-field-filters", "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-date-formats",  "index": ALL}, "data", allow_duplicate=True),
+    Output({"type": "ws-measure",       "index": ALL}, "data", allow_duplicate=True),
+    Output("ws-readonly-modal", "is_open", allow_duplicate=True),
+    Output("ws-dirty", "data", allow_duplicate=True),
+    Input("ws-dirty", "data"),
+    State("shared-ws-names", "data"),
+    State("ws-saved-snapshot", "data"),
+    prevent_initial_call=True,
+)
+def block_readonly_edits(dirty, shared_names, snapshot):
+    """Received tabs are read-only: undo any change immediately and explain why."""
+    received = {n.replace(" ", "_") for n in (shared_names or [])}
+    hit = [k for k in (dirty or []) if k in received and k in (snapshot or {})]
+    if not hit:
+        raise dash.exceptions.PreventUpdate
+    outs = []
+    for part, group in zip(_WS_STATE_PARTS, ctx.outputs_list[:6]):
+        outs.append([snapshot[item["id"]["index"]].get(part)
+                     if item["id"]["index"] in hit else dash.no_update
+                     for item in group])
+    # Dash won't re-run the upstream dirty check within this same chain, so
+    # publish the corrected list ourselves.
+    return (*outs, True, [k for k in dirty if k not in hit])
+
+
+# ─────────────────────────────────────────────
 # Duplicate worksheet
 # ─────────────────────────────────────────────
 
@@ -2636,7 +2949,6 @@ def remove_from_rows(n_clicks, current_rows):
     ws_index = next((i for i, item in enumerate(ctx.states_list[0])
                      if item["id"]["index"] == ws_key), 0)
     updated  = [f for f in (current_rows[ws_index] or []) if f != field]
-    clear_saved_result(ws_key, user_email=_user_email())
     return [updated if i == ws_index else dash.no_update
             for i in range(len(current_rows))]
 
@@ -2682,7 +2994,6 @@ def remove_from_cols(n_clicks, current_cols):
     ws_index = next((i for i, item in enumerate(ctx.states_list[0])
                      if item["id"]["index"] == ws_key), 0)
     updated  = [f for f in (current_cols[ws_index] or []) if f != field]
-    clear_saved_result(ws_key, user_email=_user_email())
     return [updated if i == ws_index else dash.no_update
             for i in range(len(current_cols))]
 
@@ -3564,6 +3875,11 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         raise dash.exceptions.PreventUpdate
     ti = next((i for i, item in enumerate(ctx.inputs_list[0])
     if item["id"]["index"] == triggered["index"]), 0)
+    # Dash also fires this when the Run Query buttons are first created (page load,
+    # new tab). Only a real click (n_clicks > 0) should run a query; otherwise the
+    # empty tab state at load time replaced the restored saved results.
+    if not n_clicks or ti >= len(n_clicks) or not n_clicks[ti]:
+        raise dash.exceptions.PreventUpdate
 
     # Debug: Print the order of all run-query-btn indices
     btn_indices = [item["id"]["index"] for item in ctx.inputs_list[0]]
@@ -3696,7 +4012,8 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             try:
                 df.to_parquet(results_dir / f"{ws_key}.parquet", index=False)
                 with open(results_dir / f"{ws_key}.meta.json", "w") as f:
-                    json.dump({"rows": rows, "cols": cols,
+                    json.dump({"rows": rows, "cols": cols, "filters": filters,
+                               "field_filters": field_filters,
                                "date_formats": date_formats, "measure": measure}, f)
                 print(f"[Query] ✓ Parquet saved")
             except Exception as e:
@@ -3803,10 +4120,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         display_df = apply_row_blanking(df, rows)
         print(f"[Query] HTML payload: {len(df)} rows × {len(df.columns)} cols = {len(df) * len(df.columns)} cells")
         table      = build_html_table(df, display_df=display_df, rows=rows)
-        if not _is_readonly_ws(triggered["index"]):
-            _save_ws_state(triggered["index"], rows, cols, filters,
-                           field_filters, date_formats, measure,
-                           user_email=_user_email())
+        # Tabs are saved explicitly (Save button / Ctrl+S), not on query run.
 
         # Build row count message with truncation notice if applicable
         msg = f"{full_row_count:,} rows returned"
@@ -3904,10 +4218,25 @@ def restore_saved_results(children, restore_complete):
             results.append(dash.no_update)
             continue
         try:
+            # Very large raw results can't end up under the 1,000-row display limit
+            # anyway; check the row count from file metadata instead of loading them.
+            import pyarrow.parquet as _pq
+            raw_rows = _pq.ParquetFile(parquet_path).metadata.num_rows
+            if raw_rows > 200_000:
+                print(f"[Restore] ws_key={ws_key}: {raw_rows:,} raw rows, too large to auto-load")
+                results.append(_too_large_placeholder(raw_rows))
+                continue
             df = pd.read_parquet(parquet_path)
             print(f"[Restore] ws_key={ws_key}, parquet exists=True, rows={len(df):,}")
             with open(meta_path) as f:
                 meta = json.load(f)
+            saved_state = ws_state_all.get(ws_key, {})
+            if saved_state.get("shared_from"):
+                saved_state = _load_owner_ws_state(saved_state["shared_from"]) or {}
+            if not _meta_matches_state(meta, saved_state):
+                print(f"[Restore] ws_key={ws_key}: saved result is from an unsaved layout, skipping")
+                results.append(dash.no_update)
+                continue
             rows = meta.get("rows", [])
             cols = meta.get("cols", [])
 
@@ -3999,8 +4328,15 @@ def restore_saved_results(children, restore_complete):
         else:
             result_types.append(f"{i}:{type(r).__name__}")
     dlog(f"[Restore Debug] Returning results list: {result_types}")
+    # Place each tab's result into its own container by key (containers may be
+    # missing or ordered differently than the saved worksheet list).
+    containers = ctx.outputs_list[0]
+    if not containers:
+        raise dash.exceptions.PreventUpdate   # tab area not built yet; try again later
+    by_key = {w.replace(" ", "_"): r for w, r in zip(worksheets, results)}
+    aligned = [by_key.get(item["id"]["index"], dash.no_update) for item in containers]
     print(f"[Restore] ✓ Initial restore complete, will not run again")
-    return results, last_run_out, True
+    return aligned, last_run_out, True
 
 
 # ─────────────────────────────────────────────
