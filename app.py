@@ -26,7 +26,9 @@ from components.worksheet import (
     AVAILABLE_FIELDS, build_query, get_field_expr,
     DATE_FIELDS, DATE_FORMAT_OPTIONS, DEFAULT_MEASURE_OPTIONS, TABLE_FIELDS
 )
-from utils.calculations import apply_calculation, validate_formula, FORMULA_FIELDS
+from utils.calculations import (apply_calculation, validate_formula, FORMULA_FIELDS,
+                                formula_source_fields, is_boolean as formula_is_boolean,
+                                to_sql as formula_to_sql, FormulaError)
 from utils.query_engine import extract_available, run_extract_query, build_duckdb_query
 from utils.config import load_config, save_config, get_base_dir, get_results_dir
 from utils.sharing import merge_inbox_to_config, get_available_calcs
@@ -578,19 +580,25 @@ def _get_options_for_field(field, fmt, calcs):
         defn      = calcs[field]
         calc_type = defn.get("type")
         if calc_type == "formula":
-            formula = defn.get("formula", "").upper()
-            bool_funcs = {"CONTAINS", "STARTSWITH", "ENDSWITH", "ISNULL", "ISNOTNULL"}
-            if any(f in formula for f in bool_funcs):
-                return [{"label": "True",  "value": "True"},
-                        {"label": "False", "value": "False"}]
-            for date_field in {"TABRUN_MY", "TABRUN_TS", "ACTION_DATE"}:
-                if date_field in formula:
+            formula = defn.get("formula", "")
+            not_filterable = [{"label": "Not filterable", "value": "__none__", "disabled": True}]
+            try:
+                if formula_to_sql(formula, _formula_sql_column) is None:
+                    return not_filterable          # e.g. FIXED: display only
+                if formula_is_boolean(formula):
+                    return [{"label": "True",  "value": "True"},
+                            {"label": "False", "value": "False"}]
+            except FormulaError:
+                return not_filterable
+            refs = formula_source_fields(formula)
+            for date_field in ("TABRUN_MY", "TABRUN_TS", "ACTION_DATE"):
+                if date_field in refs:
                     return list(_cached_filter_options(date_field, fmt))
-            for source_field in {"USER_EMAIL", "USER_NAME", "CLIENT_NAME",
-                                  "GROUP_NAME", "LONG_NAME", "ACTION_TYPE"}:
-                if source_field in formula:
+            for source_field in refs:
+                if source_field in {"USER_EMAIL", "USER_NAME", "CLIENT_NAME",
+                                    "GROUP_NAME", "LONG_NAME", "ACTION_TYPE"}:
                     return list(_cached_filter_options(source_field, fmt))
-            return [{"label": "Not filterable", "value": "__none__", "disabled": True}]
+            return not_filterable
         elif calc_type == "fixed_lod":
             lod_field = defn.get("field", "")
             if lod_field:
@@ -866,6 +874,13 @@ def apply_pivot(df, rows, cols, col_total="last", row_total="first", df_summary=
     return df
 
 
+def _formula_sql_column(name):
+    """SQL column for a field named in a formula (case-insensitive), or None."""
+    from utils.query_engine import FIELD_REGISTRY
+    info = FIELD_REGISTRY.get(str(name).upper().replace(" ", "_"))
+    return info["col"] if info else None
+
+
 def build_duck_where(field_filters, date_formats):
     from utils.query_engine import FIELD_REGISTRY
     from utils.config import load_config as _load_config
@@ -902,14 +917,15 @@ def build_duck_where(field_filters, date_formats):
         if clean_field in calcs:
             defn = calcs[clean_field]
             if defn.get("type") == "formula":
-                formula = defn.get("formula", "")
-                for fname, finfo in FIELD_REGISTRY.items():
-                    formula = formula.replace(fname, finfo["col"])
-                vals      = ", ".join([f"'{v.strip().lower().replace(chr(39), chr(39)+chr(39))}'" for v in values])
-                not_kw    = "NOT " if exclude else ""
-                duck_where.append(
-                    f"LOWER(CAST(({formula}) AS VARCHAR)) {not_kw}IN ({vals})"
-                )
+                expr = formula_to_sql(defn.get("formula", ""), _formula_sql_column)
+                if expr is None:
+                    # Not expressible in SQL (e.g. FIXED). The filter dialog marks
+                    # these "Not filterable", so this only affects old saved filters.
+                    print(f"[Filter] calculation '{clean_field}' can't be used as a filter; skipped")
+                    continue
+                vals   = ", ".join([f"'{v.strip().lower().replace(chr(39), chr(39)+chr(39))}'" for v in values])
+                not_kw = "NOT " if exclude else ""
+                duck_where.append(f"LOWER(CAST(({expr}) AS VARCHAR)) {not_kw}IN ({vals})")
                 continue
 
         col = FIELD_REGISTRY.get(clean_field, {}).get("col", clean_field)
@@ -1144,6 +1160,8 @@ def _get_layout():
     dcc.Store(id="ws-dirty-sink",          data=0),
     dcc.Store(id="save-btn-sink",          data=0),
     html.Button(id="unsaved-trigger-btn",       style={"display": "none"}),
+    html.Button(id="save-tab-trigger-btn",      style={"display": "none"}),
+    dcc.Store(id="save-tab-payload",       data=None),
     dbc.Modal([
         dbc.ModalHeader("Unsaved changes"),
         dbc.ModalBody(id="unsaved-modal-body"),
@@ -1338,9 +1356,23 @@ def _get_layout():
             html.Div(id="calc-formula-section", style={"display": "none"}, children=[
                 dbc.Label("Formula", size="sm", className="fw-bold"),
                 dbc.Textarea(id="calc-formula-input",
-                            placeholder="e.g. YEAR(TABRUN_MY)", rows=3,
+                            placeholder="e.g. CONTAINS(USER_EMAIL, '@mtab.com')", rows=3,
                             className="mb-2",
                             style={"fontSize": "13px", "fontFamily": "monospace"}),
+                html.Details([
+                    html.Summary("Formula help", style={"fontSize": "12px", "cursor": "pointer"}),
+                    html.Div([
+                        html.Div("Text comparisons ignore case. Add _CS for case-sensitive versions."),
+                        html.Code("CONTAINS(text, 'part')  STARTSWITH(…)  ENDSWITH(…)"), html.Br(),
+                        html.Code("CONTAINS_CS(…)  STARTSWITH_CS(…)  ENDSWITH_CS(…)  EXACT(a, b)"), html.Br(),
+                        html.Code("UPPER  LOWER  TRIM  LEN  CONCAT(a, b, …)  YEAR  MONTH  DAY"), html.Br(),
+                        html.Code("ISNULL(x)  ISNOTNULL(x)  FIXED(MAX, field, by_field)"), html.Br(),
+                        html.Code("IF cond THEN a ELSEIF cond THEN b ELSE c END"), html.Br(),
+                        html.Code("=  <>  <  <=  >  >=  AND  OR  NOT  +  -  *  /"), html.Br(),
+                        html.Span("Fields: USER_EMAIL or [User Email]. FIXED results can't be used as filters.",
+                                  className="text-muted"),
+                    ], style={"fontSize": "11px", "lineHeight": "1.6", "padding": "4px 0"}),
+                ], className="mb-2"),
             ]),
             html.Div(id="calc-lod-section", style={"display": "none"}, children=[
                 dbc.Row([
@@ -2562,6 +2594,19 @@ app.clientside_callback(
     Input("ws-dirty", "data"),
 )
 
+# Tab menu → Save: carries the right-clicked tab's name (it may not be active).
+app.clientside_callback(
+    """
+    function(n) {
+        if (!n) return window.dash_clientside.no_update;
+        return {name: window._dashSaveTabPayload || "", ts: Date.now()};
+    }
+    """,
+    Output("save-tab-payload", "data"),
+    Input("save-tab-trigger-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+
 # Save is unavailable on received (read-only) tabs.
 app.clientside_callback(
     """
@@ -2618,6 +2663,7 @@ def cancel_unsaved(n):
     Output("save-toast", "icon"),
     Input("save-btn", "n_clicks"),
     Input("unsaved-save-btn", "n_clicks"),
+    Input("save-tab-payload", "data"),
     State("worksheet-tabs", "value"),
     State("unsaved-pending", "data"),
     State("ws-saved-snapshot", "data"),
@@ -2629,10 +2675,15 @@ def cancel_unsaved(n):
     State({"type": "ws-measure",       "index": ALL}, "data"),
     prevent_initial_call=True,
 )
-def save_active_tab(n_save, n_modal_save, active, pending, snapshot, *_stores):
-    if not active or not (n_save or n_modal_save):
+def save_active_tab(n_save, n_modal_save, menu_payload, active, pending, snapshot, *_stores):
+    trig = ctx.triggered_id
+    if trig == "save-tab-payload":
+        active = (menu_payload or {}).get("name") or active    # tab menu → Save
+    elif not (n_save or n_modal_save):
         raise dash.exceptions.PreventUpdate
-    from_modal = ctx.triggered_id == "unsaved-save-btn"
+    if not active:
+        raise dash.exceptions.PreventUpdate
+    from_modal = trig == "unsaved-save-btn"
     switch_to  = pending if (from_modal and pending) else dash.no_update
     ws_key     = active.replace(" ", "_")
     user_email = _user_email()
@@ -3928,9 +3979,8 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                 formula_calcs[f] = defn.get("formula", "")
                 # Extract field references from the formula so they get fetched
                 formula_str = defn.get("formula", "")
-                formula_upper = formula_str.upper()
-                for ref_field in FORMULA_FIELDS:
-                    if ref_field.upper() in formula_upper and ref_field not in all_fields:
+                for ref_field in formula_source_fields(formula_str):
+                    if ref_field not in all_fields:
                         formula_extra_fields.add(ref_field)
 
     duck_fields = [f for f in all_fields if f not in formula_calcs]
@@ -4398,9 +4448,8 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
                 if isinstance(defn, dict) and defn.get("type") == "formula":
                     formula_calcs[f] = defn.get("formula", "")
                     formula_str = defn.get("formula", "")
-                    formula_upper = formula_str.upper()
-                    for ref_field in FORMULA_FIELDS:
-                        if ref_field.upper() in formula_upper and ref_field not in all_fields:
+                    for ref_field in formula_source_fields(formula_str):
+                        if ref_field not in all_fields:
                             formula_extra_fields.add(ref_field)
 
         # Build duck_fields excluding formula calcs, adding extra fields
@@ -4539,9 +4588,8 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
                 if isinstance(defn, dict) and defn.get("type") == "formula":
                     formula_calcs[f] = defn.get("formula", "")
                     formula_str = defn.get("formula", "")
-                    formula_upper = formula_str.upper()
-                    for ref_field in FORMULA_FIELDS:
-                        if ref_field.upper() in formula_upper and ref_field not in all_fields:
+                    for ref_field in formula_source_fields(formula_str):
+                        if ref_field not in all_fields:
                             formula_extra_fields.add(ref_field)
 
         # Build duck_fields excluding formula calcs, adding extra fields

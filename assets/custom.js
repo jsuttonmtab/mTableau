@@ -135,7 +135,8 @@ setTimeout(function() {
         'padding:4px 0', 'font-size:13px',
     ].join(';');
 
-    menu.innerHTML = '<div id="ctx-rename" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">✏️ <span>Rename</span></div>' +
+    menu.innerHTML = '<div id="ctx-save" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">💾 <span>Save</span></div>' +
+        '<div id="ctx-rename" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">✏️ <span>Rename</span></div>' +
         '<div id="ctx-duplicate" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">⧉ <span>Duplicate</span></div>' +
         '<div id="ctx-show-sql" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">📋 <span>Show SQL</span></div>' +
         '<div id="ctx-share-copy" style="padding:8px 16px;cursor:pointer;display:flex;align-items:center;gap:8px;">🔗 <span>Sharing</span></div>' +
@@ -145,7 +146,7 @@ setTimeout(function() {
 
     let targetTab = null;
 
-    ['ctx-rename', 'ctx-duplicate', 'ctx-show-sql', 'ctx-share-copy', 'ctx-settings'].forEach(function(id) {
+    ['ctx-save', 'ctx-rename', 'ctx-duplicate', 'ctx-show-sql', 'ctx-share-copy', 'ctx-settings'].forEach(function(id) {
         const el = document.getElementById(id);
         if (!el) return;
         el.addEventListener('mouseenter', function() { el.style.backgroundColor = '#f0f4ff'; });
@@ -174,6 +175,8 @@ setTimeout(function() {
             const ctxSettings = document.getElementById('ctx-settings');
 
             if (ctxShareCopy) ctxShareCopy.style.display = isShared ? 'none' : 'flex';
+            const ctxSave = document.getElementById('ctx-save');
+            if (ctxSave) ctxSave.style.display = isShared ? 'none' : 'flex';
             if (ctxRename) ctxRename.style.display = isShared ? 'none' : 'flex';
             if (ctxSettings) ctxSettings.style.display = isShared ? 'none' : 'flex';
             const height = menu.offsetHeight;
@@ -250,6 +253,17 @@ setTimeout(function() {
             if (e.key === 'Enter') doRename();
             if (e.key === 'Escape') doCancel();
         });
+        });
+    }
+
+    const ctxSave = document.getElementById('ctx-save');
+    if (ctxSave) {
+        ctxSave.addEventListener('click', function() {
+            if (!targetTab) return;
+            const tabName = window.mtTabName(targetTab); hideTabMenu();
+            window._dashSaveTabPayload = tabName;
+            const btn = document.getElementById('save-tab-trigger-btn');
+            if (btn) btn.click();
         });
     }
 
