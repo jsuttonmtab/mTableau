@@ -881,6 +881,98 @@ def _formula_sql_column(name):
     return info["col"] if info else None
 
 
+_FIXED_PANDAS_AGG = {"MAX": "max", "MIN": "min", "SUM": "sum", "COUNT": "count", "MEAN": "mean"}
+
+
+def _registry_field(name):
+    from utils.query_engine import FIELD_REGISTRY
+    key = str(name).upper().replace(" ", "_")
+    return key if key in FIELD_REGISTRY else None
+
+
+def _plan_formula_fields(all_fields, global_calcs):
+    """
+    Work out how formula calculations on the shelves will be computed.
+      formula_calcs: {shelf field: formula}   (computed in pandas after the query)
+      fixed_specs:   {shelf field: (agg, value_field, dim_field, date_fmt)}
+      extra_fields:  source fields the main query must also fetch
+    FIXED(agg, value, dim) is computed by its own small query (agg of value per dim)
+    and attached by dim, so the main query never has to split rows by the value
+    field. Fetching e.g. ACTION_DATE at row level multiplied the rows by every date.
+    """
+    from utils.formula import parse as _parse
+    calcs = global_calcs if isinstance(global_calcs, dict) else {}
+    formula_calcs, fixed_specs, extra = {}, {}, []
+    for f in all_fields:
+        name = f[5:] if f.startswith("calc_") else f
+        defn = calcs.get(name, calcs.get(f, {}))
+        if not (isinstance(defn, dict) and defn.get("type") == "formula"):
+            continue
+        formula = defn.get("formula", "")
+        formula_calcs[f] = formula
+        try:
+            node = _parse(formula)
+        except FormulaError as e:
+            print(f"[Query] calculation '{name}' has an invalid formula: {e}")
+            continue
+        if node[0] == "call" and node[1] == "FIXED":
+            args = node[2]
+            agg = args[0][1].upper()
+            value, dim = _registry_field(args[1][1]), _registry_field(args[2][1])
+            fmt = args[3][1] if len(args) == 4 else None
+            if value and dim:
+                fixed_specs[f] = (agg, value, dim, fmt)
+                needed = [dim]
+            else:
+                print(f"[Query] FIXED calculation '{name}' references unknown fields")
+                continue
+        else:
+            needed = formula_source_fields(formula)
+        for ref in needed:
+            if ref not in all_fields and ref not in extra:
+                extra.append(ref)
+    return formula_calcs, fixed_specs, extra
+
+
+def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
+                    rows, cols, measure, global_calcs):
+    """Add formula columns to a query result, then drop helper fields and re-combine
+    rows that only differed by them (so the result is at the shelves' grain)."""
+    calcs = global_calcs if isinstance(global_calcs, dict) else {}
+    for f, formula in formula_calcs.items():
+        if f in fixed_specs:
+            continue
+        try:
+            df[f] = apply_calculation(formula, df)
+        except Exception as e:
+            print(f"[Query] calculation '{f}' failed: {e}")
+            df[f] = None
+    for f, (agg, value, dim, fmt) in fixed_specs.items():
+        try:
+            # "raw": real values, not the default month labels the builder gives
+            # date fields (MAX over "Sep 2025"-style text was alphabetical).
+            side = run_extract_query(build_duckdb_query(
+                [dim, value], duck_where, date_formats={value: "raw"}, measure=measure,
+                global_calcs=calcs))
+            per_dim = side.groupby(dim)[value].agg(_FIXED_PANDAS_AGG.get(agg, "max"))
+            if fmt:
+                per_dim = pd.to_datetime(per_dim, errors="coerce").dt.strftime(str(fmt))
+            df[f] = df[dim].map(per_dim) if dim in df.columns else None
+            print(f"[Query] FIXED '{f}': {agg}({value}) per {dim} from {len(side):,} rows")
+        except Exception as e:
+            print(f"[Query] FIXED calculation '{f}' failed: {e}")
+            df[f] = None
+    drop = [e for e in extra_fields if e in df.columns and e not in rows and e not in cols]
+    if drop:
+        df = df.drop(columns=drop)
+        if "Count" in df.columns:
+            dims = [c for c in df.columns if c != "Count"]
+            before = len(df)
+            df = df.groupby(dims, dropna=False, sort=False)["Count"].sum().reset_index()
+            print(f"[Query] Re-combined {before:,} rows to {len(df):,} after dropping {drop}")
+    return df
+
+
 def build_duck_where(field_filters, date_formats):
     from utils.query_engine import FIELD_REGISTRY
     from utils.config import load_config as _load_config
@@ -3967,21 +4059,9 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             return [result if i == ti else dash.no_update
                     for i in range(len(n_clicks))], dash.no_update, dash.no_update, False
 
-    # Separate formula calcs from regular fields — formula calcs don't exist
-    # in the parquet and must be computed post-query via apply_calculation
-    formula_calcs = {}
-    formula_extra_fields = set()
-    if isinstance(global_calcs, dict):
-        for f in all_fields:
-            calc_name = f[5:] if f.startswith("calc_") else f
-            defn = global_calcs.get(calc_name, global_calcs.get(f, {}))
-            if isinstance(defn, dict) and defn.get("type") == "formula":
-                formula_calcs[f] = defn.get("formula", "")
-                # Extract field references from the formula so they get fetched
-                formula_str = defn.get("formula", "")
-                for ref_field in formula_source_fields(formula_str):
-                    if ref_field not in all_fields:
-                        formula_extra_fields.add(ref_field)
+    # Formula calcs aren't columns in the extract: they're computed after the query
+    # (FIXED ones via their own small query; see _plan_formula_fields).
+    formula_calcs, fixed_specs, formula_extra_fields = _plan_formula_fields(all_fields, global_calcs)
 
     duck_fields = [f for f in all_fields if f not in formula_calcs]
     # Add fields that formulas need but aren't on rows/cols
@@ -4037,26 +4117,9 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             results_dir = get_results_dir(_user_email())
             results_dir.mkdir(parents=True, exist_ok=True)
 
-            # ── Apply FIXED formulas BEFORE pivot (raw data has all columns) ──
-            if formula_calcs and global_calcs and isinstance(global_calcs, dict):
-                for calc_name, defn in global_calcs.items():
-                    if isinstance(defn, dict) and defn.get("type") == "formula":
-                        if calc_name not in all_fields and f"calc_{calc_name}" not in all_fields:
-                            continue
-                        print(f"APPLYING FORMULA: {calc_name}, formula={defn.get('formula','')}, df.columns={list(df.columns)}")
-                        try:
-                            df[calc_name] = apply_calculation(defn["formula"], df)
-                            # Also add with calc_ prefix if that's how rows references it
-                            if f"calc_{calc_name}" in all_fields and calc_name not in all_fields:
-                                df[f"calc_{calc_name}"] = df[calc_name]
-                                df.drop(columns=[calc_name], inplace=True)
-                        except Exception as e:
-                            print(f"Pre-pivot calc error {calc_name}: {e}")
-
-                # Drop extra fields fetched only for formulas
-                for ef in formula_extra_fields:
-                    if ef in df.columns and ef not in rows and ef not in cols:
-                        df.drop(columns=[ef], inplace=True)
+            # Formula columns + re-combine rows split only by helper fields
+            df = _apply_formulas(df, formula_calcs, fixed_specs, formula_extra_fields,
+                                 duck_where, rows, cols, measure, global_calcs)
             # Save results AFTER formulas are applied (so exports match the tab)
             print(f"[Query] 1. Saving {len(df):,} rows to parquet...")
             try:
@@ -4071,7 +4134,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
 
             # Initialize truncation tracking for all DuckDB paths
             full_row_count = len(df)
-            MAX_DISPLAY_ROWS = 100  # Reduced from 1000 for testing browser payload
+            MAX_DISPLAY_ROWS = 1000   # display only; the saved result / export has everything
             display_truncated = False
 
             if "Count" in df.columns and cols:
@@ -4117,20 +4180,23 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                     except Exception:
                         pass
 
-                # Truncate for display — full data is in parquet for export
-                print(f"[Query] 4. Truncating {full_row_count:,} rows to {MAX_DISPLAY_ROWS:,} for display...")
-                display_truncated = len(df) > MAX_DISPLAY_ROWS
-                if display_truncated:
-                    df = df.iloc[:MAX_DISPLAY_ROWS].copy()
-                    print(f"[Query] ✓ Truncated to {len(df):,} rows for display")
-
-                print(f"[Query] 5. Applying pivot to {len(df):,} rows...")
+                # Pivot ALL rows first, then limit what's displayed. (Truncating
+                # before the pivot built the table from a fraction of the data.)
+                print(f"[Query] 4. Applying pivot to {len(df):,} rows...")
                 df = apply_pivot(df, rows, cols,
                                  col_total=ws_cfg.get("col_grand_total", "last"),
                                  row_total=ws_cfg.get("row_grand_total", "first"),
                                  df_summary=df_summary)
+                full_row_count = len(df)
                 print(f"[Query] ✓ Pivot complete, result: {len(df):,} rows")
+
+            # Limit rows for display — full data is in the saved result for export
+            display_truncated = len(df) > MAX_DISPLAY_ROWS
+            if display_truncated:
+                df = df.iloc[:MAX_DISPLAY_ROWS].copy()
+                print(f"[Query] Showing first {MAX_DISPLAY_ROWS:,} of {full_row_count:,} rows")
         else:
+            MAX_DISPLAY_ROWS = 1000
             print(f"[Query] 1. Running non-DuckDB query...")
             df = run_query(sql, params)
             full_row_count = len(df)
@@ -4157,7 +4223,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         col_truncated = False
         row_cols = [c for c in df.columns if c in rows]
         data_cols = [c for c in df.columns if c not in rows]
-        MAX_DISPLAY_COLS = 10  # Reduced from 20 for testing browser payload
+        MAX_DISPLAY_COLS = 20   # display only; exports include every column
         if len(data_cols) > MAX_DISPLAY_COLS:
             keep_cols = row_cols + data_cols[:MAX_DISPLAY_COLS]
             # Keep Grand Total if present
@@ -4175,7 +4241,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         # Build row count message with truncation notice if applicable
         msg = f"{full_row_count:,} rows returned"
         if display_truncated:
-            msg += " — showing first 1,000 rows"
+            msg += f" — showing first {MAX_DISPLAY_ROWS:,} rows"
         if col_truncated:
             msg += f" — showing first {MAX_DISPLAY_COLS} date columns"
         if display_truncated or col_truncated:
@@ -4438,67 +4504,29 @@ def export_data(n_clicks, rows_data, cols_data, field_filters_data,
         if not all_fields:
             raise dash.exceptions.PreventUpdate
 
-        # Detect formula calcs and extra fields they need
-        formula_calcs = {}
-        formula_extra_fields = set()
-        if isinstance(global_calcs, dict):
-            for f in all_fields:
-                calc_name = f[5:] if f.startswith("calc_") else f
-                defn = global_calcs.get(calc_name, global_calcs.get(f, {}))
-                if isinstance(defn, dict) and defn.get("type") == "formula":
-                    formula_calcs[f] = defn.get("formula", "")
-                    formula_str = defn.get("formula", "")
-                    for ref_field in formula_source_fields(formula_str):
-                        if ref_field not in all_fields:
-                            formula_extra_fields.add(ref_field)
-
-        # Build duck_fields excluding formula calcs, adding extra fields
-        duck_fields = [f for f in all_fields if f not in formula_calcs]
-        for ef in formula_extra_fields:
-            if ef not in duck_fields:
-                duck_fields.append(ef)
-
+        # A saved result already has formulas applied and is at the shelves' grain.
+        # Without one, run the same query + formulas as Run Query.
         if parquet_path.exists():
             df = pd.read_parquet(parquet_path)
-            # Skip pivot for large datasets — export raw grouped data as-is
-            if len(df) > 5000:
-                print(f"[Export] Skipping pivot for {len(df):,} rows, exporting raw data")
-                import io
-                output = io.BytesIO()
-                df.to_excel(output, index=False)
-                output.seek(0)
-                return dcc.send_bytes(output.getvalue(), filename=f"{ws_key}.xlsx")
         else:
+            formula_calcs, fixed_specs, extra = _plan_formula_fields(all_fields, global_calcs)
+            duck_fields = [f for f in all_fields if f not in formula_calcs] + \
+                          [e for e in extra if e not in all_fields]
             query_date_formats = {}
-            for f in all_fields:
+            for f in duck_fields:
+                if f in extra:
+                    continue
                 fmt = _get_fmt(date_formats, "rows" if f in rows else "cols", f)
                 if fmt != "none":
                     query_date_formats[f] = fmt
             duck_where = build_duck_where(field_filters, date_formats)
-            sql = build_duckdb_query(
-                all_fields, duck_where, date_formats=query_date_formats, measure=measure,
-                global_calcs=global_calcs if isinstance(global_calcs, dict) else {}
-            )
-            df = run_extract_query(sql)
+            df = run_extract_query(build_duckdb_query(
+                duck_fields, duck_where, date_formats=query_date_formats, measure=measure,
+                global_calcs=global_calcs if isinstance(global_calcs, dict) else {}))
+            df = _apply_formulas(df, formula_calcs, fixed_specs, extra, duck_where,
+                                 rows, cols, measure, global_calcs)
+        print(f"[Export] {len(df):,} rows from {'saved result' if parquet_path.exists() else 'query'}")
 
-        # Apply formula calculations before pivot
-        if formula_calcs and isinstance(global_calcs, dict):
-            for calc_name, defn in global_calcs.items():
-                if isinstance(defn, dict) and defn.get("type") == "formula":
-                    if calc_name not in all_fields and f"calc_{calc_name}" not in all_fields:
-                        continue
-                    try:
-                        df[calc_name] = apply_calculation(defn["formula"], df)
-                        if f"calc_{calc_name}" in all_fields and calc_name not in all_fields:
-                            df[f"calc_{calc_name}"] = df[calc_name]
-                            df.drop(columns=[calc_name], inplace=True)
-                    except Exception as e:
-                        print(f"Export calc error {calc_name}: {e}")
-
-            # Drop extra fields fetched only for formulas
-            for ef in formula_extra_fields:
-                if ef in df.columns and ef not in rows and ef not in cols:
-                    df.drop(columns=[ef], inplace=True)
 
         if cols and rows and "Count" in df.columns:
             ws_cfg = (ws_settings or {}).get(ws_key, {})
@@ -4578,67 +4606,29 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
         if not all_fields:
             raise dash.exceptions.PreventUpdate
 
-        # Detect formula calcs and extra fields they need
-        formula_calcs = {}
-        formula_extra_fields = set()
-        if isinstance(global_calcs, dict):
-            for f in all_fields:
-                calc_name = f[5:] if f.startswith("calc_") else f
-                defn = global_calcs.get(calc_name, global_calcs.get(f, {}))
-                if isinstance(defn, dict) and defn.get("type") == "formula":
-                    formula_calcs[f] = defn.get("formula", "")
-                    formula_str = defn.get("formula", "")
-                    for ref_field in formula_source_fields(formula_str):
-                        if ref_field not in all_fields:
-                            formula_extra_fields.add(ref_field)
-
-        # Build duck_fields excluding formula calcs, adding extra fields
-        duck_fields = [f for f in all_fields if f not in formula_calcs]
-        for ef in formula_extra_fields:
-            if ef not in duck_fields:
-                duck_fields.append(ef)
-
+        # A saved result already has formulas applied and is at the shelves' grain.
+        # Without one, run the same query + formulas as Run Query.
         if parquet_path.exists():
             df = pd.read_parquet(parquet_path)
-            # Skip pivot for large datasets — export raw grouped data as-is
-            if len(df) > 5000:
-                print(f"[Export Crosstab] Skipping pivot for {len(df):,} rows, exporting raw data")
-                import io
-                output = io.BytesIO()
-                df.to_excel(output, index=False)
-                output.seek(0)
-                return dcc.send_bytes(output.getvalue(), filename=f"{ws_key}_crosstab.xlsx")
         else:
+            formula_calcs, fixed_specs, extra = _plan_formula_fields(all_fields, global_calcs)
+            duck_fields = [f for f in all_fields if f not in formula_calcs] + \
+                          [e for e in extra if e not in all_fields]
             query_date_formats = {}
-            for f in all_fields:
+            for f in duck_fields:
+                if f in extra:
+                    continue
                 fmt = _get_fmt(date_formats, "rows" if f in rows else "cols", f)
                 if fmt != "none":
                     query_date_formats[f] = fmt
             duck_where = build_duck_where(field_filters, date_formats)
-            sql = build_duckdb_query(
-                all_fields, duck_where, date_formats=query_date_formats, measure=measure,
-                global_calcs=global_calcs if isinstance(global_calcs, dict) else {}
-            )
-            df = run_extract_query(sql)
+            df = run_extract_query(build_duckdb_query(
+                duck_fields, duck_where, date_formats=query_date_formats, measure=measure,
+                global_calcs=global_calcs if isinstance(global_calcs, dict) else {}))
+            df = _apply_formulas(df, formula_calcs, fixed_specs, extra, duck_where,
+                                 rows, cols, measure, global_calcs)
+        print(f"[Export Crosstab] {len(df):,} rows from {'saved result' if parquet_path.exists() else 'query'}")
 
-        # Apply formula calculations before pivot
-        if formula_calcs and isinstance(global_calcs, dict):
-            for calc_name, defn in global_calcs.items():
-                if isinstance(defn, dict) and defn.get("type") == "formula":
-                    if calc_name not in all_fields and f"calc_{calc_name}" not in all_fields:
-                        continue
-                    try:
-                        df[calc_name] = apply_calculation(defn["formula"], df)
-                        if f"calc_{calc_name}" in all_fields and calc_name not in all_fields:
-                            df[f"calc_{calc_name}"] = df[calc_name]
-                            df.drop(columns=[calc_name], inplace=True)
-                    except Exception as e:
-                        print(f"Crosstab calc error {calc_name}: {e}")
-
-            # Drop extra fields fetched only for formulas
-            for ef in formula_extra_fields:
-                if ef in df.columns and ef not in rows and ef not in cols:
-                    df.drop(columns=[ef], inplace=True)
 
         if cols and rows and "Count" in df.columns:
             ws_cfg = (ws_settings or {}).get(ws_key, {})

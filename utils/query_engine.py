@@ -299,7 +299,7 @@ def build_duckdb_query(fields, where_clauses, limit=None,
     select_sql = ", ".join(select_fields)
     group_sql  = ", ".join(group_fields) if group_fields else "1"
     all_where = list(where_clauses)
-    where_sql   = f"WHERE {' AND '.join(all_where)}"
+    where_sql   = f"WHERE {' AND '.join(all_where)}" if all_where else ""
 
     # ── Build ORDER BY ────────────────────────────────────────────────────────
     # Date-formatted fields sort by their underlying raw column so the result
