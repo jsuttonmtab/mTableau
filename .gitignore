@@ -22,6 +22,7 @@ user_data/
 *.duckdb
 *.duckdb.wal
 *.json.tmp
+*.tmp
 
 # Patches handed over for applying locally
 *.patch

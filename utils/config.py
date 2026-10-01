@@ -1,5 +1,7 @@
 import copy
 import json
+import os
+import threading
 from pathlib import Path
 import sys
 
@@ -24,6 +26,8 @@ def get_results_dir(user_email=None):
     if user_email:
         return get_user_dir(user_email) / "results"
     return get_base_dir() / "data" / "results"
+
+_save_lock = threading.Lock()
 
 DEFAULT_CONFIG = {
     "DB_HOST":           "",
@@ -88,10 +92,13 @@ def save_config(data, user_email=None):
     try:
         path = get_config_path(user_email)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(path)
+        # Unique temp file per write + a lock: with gunicorn threads, two requests
+        # can save at the same time, and a shared temp name would collide.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        with _save_lock:
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            tmp.replace(path)
         # Update cache immediately
         _cache[cache_key]       = copy.deepcopy({**DEFAULT_CONFIG, **data})
         _cache_mtime[cache_key] = path.stat().st_mtime
