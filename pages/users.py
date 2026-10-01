@@ -1,9 +1,9 @@
 from dash import html, dcc, ALL
 import dash_bootstrap_components as dbc
-from utils.auth import list_users
+from utils.auth import list_users_admin
 
 def build_users_layout():
-    users = list_users()
+    users = list_users_admin()
     user_rows = []
     for u in users:
         user_rows.append(

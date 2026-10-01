@@ -116,15 +116,10 @@ def get_extract_info():
     last_refreshed = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_mtime))
 
     try:
-        con        = duckdb.connect()
-        con.execute("SET memory_limit='1GB'")
-        usage_rows = con.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{str(USAGE_PATH)}')"
-        ).fetchone()[0]
-        bridge_rows = con.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{str(BRIDGE_PATH)}')"
-        ).fetchone()[0]
-        con.close()
+        # Row counts straight from the parquet footers: instant, no data read.
+        import pyarrow.parquet as _pq
+        usage_rows  = _pq.ParquetFile(USAGE_PATH).metadata.num_rows
+        bridge_rows = _pq.ParquetFile(BRIDGE_PATH).metadata.num_rows
     except Exception:
         usage_rows  = None
         bridge_rows = None

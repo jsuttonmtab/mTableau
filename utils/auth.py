@@ -147,6 +147,20 @@ def list_users():
         for email, data in users.items()
     ]
 
+def list_users_admin():
+    """All users with their roles, for the admin user-management screen only.
+    (list_users() stays minimal because every user's share picker calls it.)"""
+    users = _load_users()
+    return [
+        {
+            "email": email,
+            "name": data.get("name", email),
+            "is_admin": bool(data.get("is_admin", False)),
+            "must_change_password": bool(data.get("must_change_password", False)),
+        }
+        for email, data in users.items()
+    ]
+
 def reset_password(email, new_password):
     """Reset user password and set must_change_password flag."""
     email = email.strip().lower()

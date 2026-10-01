@@ -39,6 +39,7 @@ import duckdb
 try:
     from flask_login import login_user, logout_user, current_user
     from utils.auth import (
+        list_users_admin,
         init_auth, authenticate, get_user, must_change_password,
         change_password, add_user, delete_user, list_users, reset_password
     )
@@ -5334,7 +5335,7 @@ def handle_add_user(n_clicks, name, email, password, is_admin):
         return "All fields required", dash.no_update
     if add_user(email, name, password, is_admin):
         # Rebuild users table
-        users = list_users()
+        users = list_users_admin()
         rows = []
         for u in users:
             rows.append(html.Tr([
@@ -5369,23 +5370,38 @@ def handle_user_actions(reset_clicks, delete_clicks):
 
     triggered = ctx.triggered_id
     if not triggered:
-        return dash.no_update, dash.no_update
+        raise dash.exceptions.PreventUpdate
+
+    # Act only on a real click. Dash also fires this callback whenever the user
+    # table is (re)built, because new Reset/Delete buttons appear; it then
+    # "triggers" with n_clicks=None and used to reset (or delete!) whichever
+    # user that button belonged to.
+    clicked = None
+    for group in ctx.inputs_list:
+        for item in group:
+            if item.get("id") == triggered:
+                clicked = item.get("value")
+    if not clicked:
+        raise dash.exceptions.PreventUpdate
 
     action_type = triggered.get("type")
     email = triggered.get("index")
 
     if action_type == "reset-pw-btn":
-        temp_pwd = "TempPwd123!"
+        import secrets
+        temp_pwd = secrets.token_urlsafe(9)        # random per reset, shown once
         reset_password(email, temp_pwd)
         msg = f"✅ Password reset for {email}. Temp: {temp_pwd}"
     elif action_type == "delete-user-btn":
+        if email == current_user.email:
+            return "❌ You can't delete your own account.", dash.no_update
         delete_user(email)
         msg = f"✅ User {email} deleted"
     else:
         return dash.no_update, dash.no_update
 
     # Rebuild users table
-    users = list_users()
+    users = list_users_admin()
     rows = []
     for u in users:
         rows.append(html.Tr([
