@@ -1086,6 +1086,85 @@ def _date_filter_sql(col, values, exclude=False):
     return f"NOT {combined}" if exclude else combined
 
 
+class _SharedUsageScan:
+    """
+    Filter the usage extract once per query run and let the main and the
+    grand-total summary queries both read that small result.
+
+    Both queries apply the same usage-column filters (client, action type,
+    months, formula filters on usage fields...) to the full usage table, which
+    was most of each query's time. WHERE conditions that only reference usage
+    columns can be applied before the joins without changing the result (all
+    joins are inner joins), so they go into a temp table "fu"; other conditions
+    (study, group, QMNEM fields) stay in each query. Anything unexpected falls
+    back to the original full queries.
+    """
+    _ALIAS = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]")
+    MAX_ROWS = 3_000_000
+
+    def __init__(self, duck_where, full_sql):
+        """full_sql: the main query as built normally. Only the usage columns it
+        references (plus join keys) are kept; the summary query's fields are a
+        subset of the main query's, so this covers both."""
+        from data.extract import USAGE_PATH
+        self.usage_ref = f"read_parquet('{str(USAGE_PATH)}')"
+        self.con = None
+        self.rest_where = list(duck_where or [])
+        usage_only = [c for c in self.rest_where if self._usage_only(c)]
+        if not usage_only:
+            return                                   # nothing to share
+        cols = set(re.findall(r"\bu\.([A-Za-z_][A-Za-z0-9_]*)", str(full_sql))) | {"USAGE_ID", "USER_ID"}
+        try:
+            con = duckdb.connect()
+            con.execute("SET memory_limit='2GB'")
+            t = time.time()
+            # Capped: with broad filters most of the extract would land in the temp
+            # table (slower and memory-heavy), so stop early and use the full queries.
+            con.execute(f"CREATE TEMP TABLE fu AS SELECT {', '.join(sorted(cols))} FROM {self.usage_ref} u WHERE "
+                        + " AND ".join(f"({c})" for c in usage_only)
+                        + f" LIMIT {self.MAX_ROWS + 1}")
+            n = con.execute("SELECT COUNT(*) FROM fu").fetchone()[0]
+            if n > self.MAX_ROWS:
+                con.close()
+                print(f"[Query] Filters keep over {self.MAX_ROWS:,} usage rows; using full queries")
+                return
+            print(f"[Query] Shared usage scan: {n:,} rows in {time.time() - t:.1f}s")
+            self.con = con
+            self.rest_where = [c for c in self.rest_where if c not in usage_only]
+        except Exception as e:
+            print(f"[Query] Shared usage scan unavailable ({e}); using full queries")
+            self.con = None
+            self.rest_where = list(duck_where or [])
+
+    @classmethod
+    def _usage_only(cls, clause):
+        text = re.sub(r"'(?:[^']|'')*'", "''", str(clause))     # ignore string literals
+        if "read_parquet" in text or "SELECT" in text.upper():
+            return False
+        aliases = set(cls._ALIAS.findall(text))
+        return aliases == {"u"}
+
+    def run(self, build_sql, full_sql):
+        """build_sql(where) -> SQL. Runs on the shared scan when possible,
+        otherwise runs full_sql (the original query) as before."""
+        if self.con is not None:
+            try:
+                sql = build_sql(self.rest_where)
+                if sql.count(self.usage_ref) == 1:
+                    return self.con.execute(sql.replace(self.usage_ref, "fu")).fetchdf()
+            except Exception as e:
+                print(f"[Query] Shared-scan query failed ({e}); running full query")
+        return run_extract_query(full_sql)
+
+    def close(self):
+        if self.con is not None:
+            try:
+                self.con.close()
+            except Exception:
+                pass
+            self.con = None
+
+
 def build_duck_where(field_filters, date_formats):
     from utils.query_engine import FIELD_REGISTRY
     from utils.config import load_config as _load_config
@@ -4228,7 +4307,11 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         if use_duckdb:
             _t0 = time.time()
             print(f"[Query] 0. Running main query...")
-            df = run_extract_query(sql)
+            _scan = _SharedUsageScan(duck_where, sql)
+            _gc = global_calcs if isinstance(global_calcs, dict) else {}
+            df = _scan.run(lambda w: build_duckdb_query(duck_fields, w, date_formats=query_date_formats,
+                                                        measure=measure, global_calcs=_gc),
+                           sql)
             print(f"[Query] ✓ Main query returned {len(df):,} rows in {time.time() - _t0:.1f}s")
             results_dir = get_results_dir(_user_email())
             results_dir.mkdir(parents=True, exist_ok=True)
@@ -4290,7 +4373,10 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                             )
                             print(f"[Query] 2. Running summary query for fanout deduplication...")
                             _t1 = time.time()
-                            df_summary = run_extract_query(summary_sql)
+                            df_summary = _scan.run(
+                                lambda w: build_duckdb_query(summary_fields, w, date_formats=summary_date_fmts,
+                                                             measure=measure, global_calcs=_gc),
+                                summary_sql)
                             print(f"[Query] ✓ Summary query returned {len(df_summary):,} rows in {time.time() - _t1:.1f}s")
                         except Exception as e:
                             print(f"Summary query error: {e}")
@@ -4304,6 +4390,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
                     except Exception:
                         pass
 
+                _scan.close()                      # shared usage scan no longer needed
                 # Pivot ALL rows first, then limit what's displayed. (Truncating
                 # before the pivot built the table from a fraction of the data.)
                 print(f"[Query] 4. Applying pivot to {len(df):,} rows...")
