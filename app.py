@@ -5809,23 +5809,8 @@ def handle_share_worksheet(n_clicks, ws_name, selected_users, worksheets, calcs)
         except Exception as e:
             print(f"Error sharing with {recipient_email}: {e}")
 
-    # Refresh "Has access" section
-    shares = get_shares_from(user_email, ws_name)
-    has_access_items = []
-    for share in shares:
-        dt = datetime.datetime.fromtimestamp(share["shared_at"]).strftime("%Y-%m-%d %H:%M")
-        has_access_items.append(html.Div(
-            f"✓ {share['recipient_name']} ({share['recipient_email']}) on {dt}",
-            style={"fontSize": "12px", "marginBottom": "4px"}
-        ))
-
-    if has_access_items:
-        has_access_section = html.Div([
-            html.Div("Has access:", style={"fontWeight": "bold", "marginBottom": "8px"}),
-            html.Div(has_access_items)
-        ])
-    else:
-        has_access_section = html.Div("Not shared with anyone yet.", style={"color": "#666", "fontSize": "12px"})
+    # Refresh "Has access" (same builder as opening the dialog, incl. Remove buttons)
+    has_access_section, _, _ = _share_modal_sections(user_email, ws_name)
 
     status_msg = f"✅ Shared with {', '.join(shared_with_names)}" if shared_count > 0 else "❌ No users shared"
     return status_msg, [], has_access_section
