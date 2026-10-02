@@ -9,6 +9,8 @@ venv/
 config.json
 users.json
 data/secret_key
+data/extract_status.json
+data/extract_cancel
 
 # Runtime data: per-user configs/results, shared registry, inboxes, extracts
 data/users/

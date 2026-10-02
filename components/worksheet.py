@@ -201,10 +201,14 @@ def build_table_panel(worksheet_id, global_calcs=None):
         table_calcs = calcs_by_table.get(table_key, [])
         calc_buttons = []
         for name, defn in table_calcs:
+            shared_by = defn.get("_shared_by") if isinstance(defn, dict) else None
             calc_buttons.append(html.Div([
                 html.Div([
                     html.Span("ƒ", style={"fontSize": "10px", "color": "#6f42c1",
                                           "fontWeight": "bold", "marginRight": "3px"}),
+                    (html.I(className="bi bi-people-fill", title=f"Shared by {shared_by} (read-only)",
+                            style={"fontSize": "10px", "color": "#6c757d", "marginRight": "3px"})
+                     if shared_by else None),
                     html.Span(name, className="draggable-field", draggable="true",
                              **{"data-field-index": f"{worksheet_id}|calc|{name}"},
                              style={"fontSize": "11px", "cursor": "grab",
@@ -221,6 +225,7 @@ def build_table_panel(worksheet_id, global_calcs=None):
                     dbc.Button("F", id={"type": "add-filter-btn", "index": f"{worksheet_id}|calc|{name}"},
                               color="warning", size="sm", outline=True,
                               className="py-0 px-1 me-1", style={"fontSize": "9px", "lineHeight": "1.2"}),
+                    *([] if shared_by else [
                     dbc.Button("✏", id={"type": "edit-calc-btn",  "index": name},
                               color="secondary", size="sm", outline=True,
                               className="py-0 px-1 me-1", style={"fontSize": "9px", "lineHeight": "1.2"},
@@ -229,6 +234,7 @@ def build_table_panel(worksheet_id, global_calcs=None):
                               color="danger", size="sm", outline=True,
                               className="py-0 px-1", style={"fontSize": "9px", "lineHeight": "1.2"},
                               title="Delete"),
+                    ]),
                 ], style={"display": "flex", "marginTop": "2px"}),
             ], className="mb-1"))
 

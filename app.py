@@ -76,6 +76,42 @@ IS_WEB = not IS_FROZEN and os.environ.get("MTABLEAU_BASE") is not None
 print(f"[Auth] IS_WEB={IS_WEB}, IS_FROZEN={IS_FROZEN}, MTABLEAU_BASE={os.environ.get('MTABLEAU_BASE')}")
 
 # ── Per-user isolation helper ──────────────────────────────────────────────────
+def _is_admin():
+    """Desktop: always. Web: only a signed-in admin (Settings, extract, DB config)."""
+    if not IS_WEB:
+        return True
+    try:
+        return bool(HAS_AUTH and current_user.is_authenticated and current_user.is_admin)
+    except Exception:
+        return False
+
+
+def _real_click():
+    """n_clicks of the button that triggered the current callback, or None.
+    Pattern-matched buttons are re-created whenever their panel is rebuilt, and
+    Dash then fires the callback with n_clicks=None; act only on a real click."""
+    trig = ctx.triggered_id
+    if trig is None:
+        return None
+    for group in ctx.inputs_list:
+        for item in (group if isinstance(group, list) else [group]):
+            if item.get("id") == trig:
+                return item.get("value")
+    return None
+
+
+def _personal_calcs(calcs):
+    """Only the user's own calculations (drops ones shared with them)."""
+    return {k: v for k, v in (calcs or {}).items()
+            if not (isinstance(v, dict) and v.get("_shared_by"))}
+
+
+def _calcs_for_user(personal):
+    """Personal calcs plus those shared with the user (what the panels show)."""
+    user_email = _user_email()
+    return get_available_calcs(user_email, personal) if (IS_WEB and user_email) else dict(personal)
+
+
 DEBUG_LOG = os.environ.get("MTABLEAU_DEBUG") == "1"
 
 
@@ -1223,6 +1259,10 @@ def _get_layout():
     if IS_WEB and user_email:
         from utils.sharing import clear_inbox
         config, sharing_alerts = merge_inbox_to_config(user_email, config)
+        # Tabs whose owner revoked access or deleted the source go away here.
+        from utils.sharing import prune_revoked_shares
+        config, revoked_alerts, _ = prune_revoked_shares(user_email, config)
+        sharing_alerts = list(sharing_alerts) + revoked_alerts
         save_config(config, user_email=user_email)
         clear_inbox(user_email)
 
@@ -1546,6 +1586,16 @@ def _get_layout():
                                "backgroundColor": "#f8f9fa",
                                "fontFamily": "monospace", "minHeight": "24px"}),
             ]),
+            html.Div([
+                dbc.Label("Share with", size="sm", className="fw-bold mb-1"),
+                html.Div("They can use it in their tabs but not edit it. Changes you make apply to them too.",
+                         className="text-muted", style={"fontSize": "11px", "marginBottom": "4px"}),
+                dbc.Checklist(id="calc-share-users", value=[],
+                              options=[{"label": f"{u['name']} ({u['email']})", "value": u["email"]}
+                                       for u in (list_users() if IS_WEB and HAS_AUTH else [])
+                                       if u["email"] != (current_user.email if IS_WEB else None)],
+                              style={"fontSize": "12px", "maxHeight": "120px", "overflowY": "auto"}),
+            ], className="mt-3", style={"display": "block" if IS_WEB else "none"}),
             html.Div(id="calc-validation-msg", className="mt-2",
                     style={"fontSize": "12px"}),
         ]),
@@ -1705,9 +1755,10 @@ def _get_layout():
                           external_link=True,
                           style={"display": "block" if IS_WEB else "none"},
                           className="me-2", title="Logout"),
-                dbc.Button(html.I(className="bi bi-gear-fill"),
-                          id="settings-btn", color="light", size="sm",
-                          title="Settings"),
+                (dbc.Button(html.I(className="bi bi-gear-fill"),
+                           id="settings-btn", color="light", size="sm",
+                           title="Settings")
+                 if _is_admin() else None),
             ], style={"display": "flex", "alignItems": "center", "marginLeft": "auto"}, className="ms-auto"),
         ], fluid=True),
         color="dark",
@@ -2402,7 +2453,8 @@ def restore_ws_state(worksheets, _store_ids, dirty, old_snapshot, *_current):
     prevent_initial_call='initial_duplicate'
 )
 def restore_calculations(worksheets, panel_ids):
-    calcs = load_config(user_email=_user_email()).get("global_calculations", {})
+    personal = load_config(user_email=_user_email()).get("global_calculations", {})
+    calcs = _calcs_for_user(personal)          # own + shared with me
     if not calcs:
         raise dash.exceptions.PreventUpdate
     return calcs, [build_table_panel(pid["index"], calcs) for pid in panel_ids]
@@ -4837,6 +4889,8 @@ def export_crosstab(n_clicks, rows_data, cols_data, field_filters_data,
     prevent_initial_call=True
 )
 def toggle_settings(n_clicks, is_open):
+    if not _is_admin():
+        raise dash.exceptions.PreventUpdate
     if n_clicks:
         return not is_open, build_settings_layout()
     return is_open, dash.no_update
@@ -4873,6 +4927,7 @@ def relay_cancel(n, current):
     prevent_initial_call=True
 )
 def update_settings_progress(n_intervals, n_clicks):
+    _sync_extract_status()
     if not extract_messages:
         raise dash.exceptions.PreventUpdate
     latest = extract_messages[-1]
@@ -4889,6 +4944,7 @@ def update_settings_progress(n_intervals, n_clicks):
     prevent_initial_call=True
 )
 def toggle_settings_cancel(n_intervals, n_clicks):
+    _sync_extract_status()
     if not extract_messages:
         return {"display": "none"}
     latest  = extract_messages[-1]
@@ -4908,7 +4964,7 @@ def toggle_settings_cancel(n_intervals, n_clicks):
     prevent_initial_call=True
 )
 def save_config_callback(n_clicks, host, port, dbname, user, password, upload_path):
-    if not n_clicks:
+    if not n_clicks or not _is_admin():
         raise dash.exceptions.PreventUpdate
     cfg = load_config()
     cfg.update({
@@ -4931,6 +4987,54 @@ def save_config_callback(n_clicks, host, port, dbname, user, password, upload_pa
 extract_messages   = []
 extract_pct        = 0
 extract_start_time = None
+_extract_proc      = None     # Popen of the runner started by this worker (web)
+_extract_seen_done = None     # "finished" time of the last build whose caches we cleared
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _sync_extract_status():
+    """
+    Refresh extract_messages / extract_pct / extract_start_time from the runner's
+    status file (data/extract_status.json). The build runs in its own process,
+    so this is how the app sees its progress. Also notices a runner that died
+    without finishing (e.g. out of memory) and clears cached filter options once
+    a new build has finished.
+    """
+    global extract_messages, extract_pct, extract_start_time, _extract_seen_done
+    from data.extract_runner import read_status, write_status
+    if _extract_proc is not None:
+        _extract_proc.poll()                      # reap the child when it exits
+    st = read_status()
+    if not st:
+        return
+    if not st.get("done") and not _pid_alive(st.get("pid")):
+        st["messages"] = st.get("messages", []) + [
+            "❌ Extract process ended unexpectedly (possibly out of memory). "
+            "The previous extract is still in use."]
+        st["done"], st["finished"] = True, time.time()
+        try:
+            write_status(st)
+        except Exception:
+            pass
+    extract_messages   = st.get("messages", [])
+    extract_pct        = st.get("pct", 0)
+    extract_start_time = st.get("started")
+    if st.get("done") and st.get("finished") and st.get("finished") != _extract_seen_done:
+        _extract_seen_done = st["finished"]
+        _cached_filter_options.cache_clear()
+
+
+def _extract_running():
+    from data.extract_runner import read_status
+    st = read_status()
+    return bool(st) and not st.get("done") and _pid_alive(st.get("pid"))
 
 
 @app.callback(
@@ -4953,19 +5057,25 @@ def handle_extract(n_clicks, n_intervals):
     triggered = ctx.triggered_id
 
     if triggered == "refresh-extract-btn" and n_clicks:
-        extract_messages   = ["Starting extract..."]
-        extract_pct        = 0
-        extract_start_time = time.time()
-
-        def run_extract():
-            global extract_messages, extract_pct
-            def progress(msg, pct):
-                extract_messages.append(msg)
-                extract_pct = pct
-            build_extract(progress_callback=progress)
-            _cached_filter_options.cache_clear()
-
-        threading.Thread(target=run_extract, daemon=True).start()
+        if not _is_admin():
+            raise dash.exceptions.PreventUpdate
+        global _extract_proc
+        if not _extract_running():
+            extract_messages   = ["Starting extract..."]
+            extract_pct        = 0
+            extract_start_time = time.time()
+            if IS_WEB and not IS_FROZEN:
+                # Own process: if the build runs out of memory only it dies,
+                # not the web app. Its output still goes to the service log.
+                import subprocess
+                _extract_proc = subprocess.Popen(
+                    [sys.executable, "-m", "data.extract_runner"],
+                    cwd=str(get_base_dir()), start_new_session=True)
+            else:
+                # Desktop (PyInstaller) can't launch "python -m"; run in-process.
+                from data.extract_runner import run as _run_extract
+                threading.Thread(target=_run_extract, kwargs={"in_process": True},
+                                 daemon=True).start()
         visible = {"display": "block"}
         return (
             html.Div("Starting...", className="text-muted", style={"fontSize": "12px"}),
@@ -4975,6 +5085,7 @@ def handle_extract(n_clicks, n_intervals):
         )
 
     if triggered == "extract-interval":
+        _sync_extract_status()
         if not extract_messages:
             raise dash.exceptions.PreventUpdate
         latest  = extract_messages[-1]
@@ -5008,6 +5119,7 @@ def update_clock(n_intervals, n_clicks):
     triggered = ctx.triggered_id
     if triggered == "refresh-extract-btn" and n_clicks:
         return {"display": "block"}, "⏱ Extract starting...", False
+    _sync_extract_status()
     if extract_start_time:
         secs = int(time.time() - extract_start_time)
         mins, secs = divmod(secs, 60)
@@ -5025,9 +5137,13 @@ def update_clock(n_intervals, n_clicks):
     prevent_initial_call=True
 )
 def cancel_extract(n_clicks):
+    if not _is_admin():
+        raise dash.exceptions.PreventUpdate
     if n_clicks:
-        from data.extract import request_cancel
-        request_cancel()
+        # The build runs in the runner (its own process on the web); it checks
+        # for this file every second.
+        from data.extract_runner import CANCEL_PATH
+        CANCEL_PATH.touch()
     raise dash.exceptions.PreventUpdate
 
 
@@ -5046,6 +5162,7 @@ def cancel_extract(n_clicks):
     Output("calc-lod-agg",        "value"),
     Output("calc-lod-field",      "value"),
     Output("calc-validation-msg", "children"),
+    Output("calc-share-users",    "value", allow_duplicate=True),
     Input({"type": "open-calc-modal", "index": ALL}, "n_clicks"),
     Input("calc-cancel-btn", "n_clicks"),
     Input("calc-save-btn",   "n_clicks"),
@@ -5055,15 +5172,15 @@ def cancel_extract(n_clicks):
 def toggle_calc_modal(open_clicks, cancel, save, is_open):
     triggered = ctx.triggered_id
     blank     = (False, "", "aggregate", "COUNTD", "USAGE_ID", "",
-                 "EXT_STUDY_ID", "MAX", "TABRUN_TS", "")
+                 "EXT_STUDY_ID", "MAX", "TABRUN_TS", "", [])
     if triggered == "calc-cancel-btn":
         return blank
     if triggered == "calc-save-btn":
-        return (dash.no_update,) + tuple([dash.no_update] * 9)
+        return tuple([dash.no_update] * 11)
     if isinstance(triggered, dict) and triggered.get("type") == "open-calc-modal":
-        if any(n for n in open_clicks if n):
+        if _real_click():
             return (True,) + blank[1:]
-    return (is_open,) + tuple([dash.no_update] * 9)
+    raise dash.exceptions.PreventUpdate
 
 
 @app.callback(
@@ -5105,18 +5222,20 @@ def preview_lod(dim, agg, field):
     Output("calc-lod-field",      "value",    allow_duplicate=True),
     Output("calc-validation-msg", "children", allow_duplicate=True),
     Output("editing-calc-name",   "data"),
+    Output("calc-share-users",    "value", allow_duplicate=True),
     Input({"type": "edit-calc-btn", "index": ALL}, "n_clicks"),
     State("global-calculations", "data"),
     prevent_initial_call=True
 )
 def edit_calc(n_clicks, global_calcs):
-    if not any(n for n in n_clicks if n):
+    if not _real_click():
         raise dash.exceptions.PreventUpdate
-    triggered = ctx.triggered_id
-    if triggered is None:
-        raise dash.exceptions.PreventUpdate
-    name      = triggered["index"]
+    name      = ctx.triggered_id["index"]
     defn      = (global_calcs or {}).get(name, {})
+    if defn.get("_shared_by"):
+        raise dash.exceptions.PreventUpdate          # shared with me: read-only
+    from utils.sharing import calc_shared_with
+    shared_with = calc_shared_with(name, _user_email()) if IS_WEB else []
     calc_type = defn.get("type", "aggregate")
     return (True, name, calc_type,
             defn.get("func",    "COUNTD"),
@@ -5125,7 +5244,7 @@ def edit_calc(n_clicks, global_calcs):
             defn.get("dim",     "EXT_STUDY_ID"),
             defn.get("agg",     "MAX"),
             defn.get("field",   "TABRUN_TS") if calc_type == "fixed_lod" else "TABRUN_TS",
-            "", name)
+            "", name, shared_with)
 
 
 @app.callback(
@@ -5139,21 +5258,24 @@ def edit_calc(n_clicks, global_calcs):
     prevent_initial_call=True
 )
 def delete_calc(n_clicks, global_calcs, current_measure_options, panel_ids):
-    if not any(n for n in n_clicks if n):
+    if not _real_click():
         raise dash.exceptions.PreventUpdate
-    triggered = ctx.triggered_id
-    if triggered is None:
-        raise dash.exceptions.PreventUpdate
-    name  = triggered["index"]
-    calcs = dict(global_calcs or {})
-    calcs.pop(name, None)
+    name = ctx.triggered_id["index"]
+    if ((global_calcs or {}).get(name) or {}).get("_shared_by"):
+        raise dash.exceptions.PreventUpdate          # shared with me: can't delete
+    user_email = _user_email()
+    personal = _personal_calcs(global_calcs)
+    personal.pop(name, None)
     try:
-        user_email = _user_email()
         cfg = load_config(user_email=user_email)
-        cfg["global_calculations"] = calcs
+        cfg["global_calculations"] = personal
         save_config(cfg, user_email=user_email)
+        if IS_WEB and user_email:
+            from utils.sharing import unshare_calc
+            unshare_calc(name, user_email)
     except Exception as e:
         print(f"Could not save calculations: {e}")
+    calcs = _calcs_for_user(personal)
     updated_opts   = [[o for o in opts if o.get("value") != f"calc_{name}"]
                       for opts in current_measure_options]
     updated_panels = [build_table_panel(pid["index"], calcs) for pid in panel_ids]
@@ -5179,13 +5301,17 @@ def delete_calc(n_clicks, global_calcs, current_measure_options, panel_ids):
     State({"type": "measure-select", "index": ALL}, "options"),
     State({"type": "left-panel",     "index": ALL}, "id"),
     State("editing-calc-name",  "data"),
+    State("calc-share-users",   "value"),
     prevent_initial_call=True
 )
 def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
                      formula, lod_dim, lod_agg, lod_field,
-                     existing_calcs, current_measure_options, panel_ids, editing_name):
+                     existing_calcs, current_measure_options, panel_ids, editing_name,
+                     share_with=None):
     if not n_clicks:
         raise dash.exceptions.PreventUpdate
+    if editing_name and ((existing_calcs or {}).get(editing_name) or {}).get("_shared_by"):
+        raise dash.exceptions.PreventUpdate          # shared with me: read-only
     if not name or not name.strip():
         return (existing_calcs,
                 html.Span("⚠️ Please enter a name.", className="text-warning"),
@@ -5223,14 +5349,26 @@ def save_calculation(n_clicks, name, calc_type, agg_func, agg_field,
     else:
         raise dash.exceptions.PreventUpdate
 
-    calcs[name] = defn
+    user_email = _user_email()
+    if IS_WEB and user_email:
+        from utils.sharing import share_calc, unshare_calc
+        try:
+            owner_name = getattr(current_user, "name", None) or user_email
+            share_calc(name, user_email, owner_name, defn, share_with or [])
+        except ValueError as e:
+            return (existing_calcs, html.Span(f"⚠️ {e}", className="text-warning"),
+                    current_measure_options, [dash.no_update] * len(panel_ids), dash.no_update)
+        if editing_name and editing_name != name:
+            unshare_calc(editing_name, user_email)    # renamed: drop the old share
+    personal = _personal_calcs(calcs)
+    personal[name] = defn
     try:
-        user_email = _user_email()
         cfg = load_config(user_email=user_email)
-        cfg["global_calculations"] = calcs
+        cfg["global_calculations"] = personal
         save_config(cfg, user_email=user_email)
     except Exception as e:
         print(f"Could not save calculations: {e}")
+    calcs = _calcs_for_user(personal)
     new_opt        = {"label": f"{name} — {display}", "value": f"calc_{name}"}
     updated_opts   = [opts + [new_opt] for opts in current_measure_options]
     updated_panels = [build_table_panel(pid["index"], calcs) for pid in panel_ids]
@@ -5444,6 +5582,82 @@ def display_sharing_alerts(alerts):
 # Tab sharing
 # ─────────────────────────────────────────────
 
+def _share_modal_sections(current_email, ws_name):
+    """'Has access' (with Remove buttons) and 'Share with' sections of the
+    Sharing dialog for the owner's tab ws_name."""
+    from utils.auth import list_users
+    from utils.share_registry import get_shares_from
+    import datetime
+
+    shares = get_shares_from(current_email, ws_name)
+    recipients_with_access = {s["recipient_email"] for s in shares}
+
+    has_access_items = []
+    for share in shares:
+        dt = datetime.datetime.fromtimestamp(share["shared_at"]).strftime("%Y-%m-%d %H:%M")
+        has_access_items.append(html.Div([
+            html.Span(f"✓ {share['recipient_name']} ({share['recipient_email']}) on {dt}",
+                      style={"flex": "1"}),
+            dbc.Button("Remove", id={"type": "share-revoke-btn", "index": share["share_id"]},
+                       color="danger", outline=True, size="sm",
+                       title="Remove this person's access",
+                       style={"fontSize": "10px", "padding": "0 6px", "marginLeft": "8px"}),
+        ], style={"fontSize": "12px", "marginBottom": "4px", "display": "flex",
+                  "alignItems": "center"}))
+
+    if has_access_items:
+        has_access_section = html.Div([
+            html.Div("Has access:", style={"fontWeight": "bold", "marginBottom": "8px"}),
+            html.Div(has_access_items)
+        ])
+    else:
+        has_access_section = html.Div("Not shared with anyone yet.",
+                                      style={"color": "#666", "fontSize": "12px"})
+
+    available_users = [u for u in list_users()
+                       if u["email"] != current_email and u["email"] not in recipients_with_access]
+    if not available_users:
+        return has_access_section, html.Div("Everyone already has access.",
+                                            style={"color": "#666", "fontSize": "12px"}), True
+    options = [{"label": f"{u['name']} ({u['email']})", "value": u["email"]}
+               for u in available_users]
+    can_share_section = html.Div([
+        html.Div("Share with:", style={"fontWeight": "bold", "marginBottom": "8px"}),
+        dbc.Checkbox(id="share-ws-select-all", label="Select all", className="mb-2"),
+        dbc.Checklist(id="share-ws-users", options=options, className="mb-2")
+    ])
+    return has_access_section, can_share_section, False
+
+
+@app.callback(
+    Output("share-ws-has-access",        "children", allow_duplicate=True),
+    Output("share-ws-can-share-section", "children", allow_duplicate=True),
+    Output("share-ws-btn",               "disabled", allow_duplicate=True),
+    Output("share-ws-status",            "children", allow_duplicate=True),
+    Input({"type": "share-revoke-btn", "index": ALL}, "n_clicks"),
+    State("share-ws-payload", "data"),
+    prevent_initial_call=True
+)
+def revoke_share(n_clicks, ws_name):
+    """Owner removes one recipient's access. Their tab disappears on their next
+    page load (prune_revoked_shares)."""
+    trig = ctx.triggered_id
+    if not trig or not IS_WEB or not current_user.is_authenticated:
+        raise dash.exceptions.PreventUpdate
+    # Only a real click: the buttons are recreated whenever the list is rebuilt.
+    clicked = next((it.get("value") for it in ctx.inputs_list[0] if it.get("id") == trig), None)
+    if not clicked:
+        raise dash.exceptions.PreventUpdate
+    from utils.share_registry import get_share_by_id, delete_share_by_id
+    share = get_share_by_id(trig["index"])
+    if not share or share.get("owner_email") != current_user.email:
+        raise dash.exceptions.PreventUpdate
+    delete_share_by_id(trig["index"])
+    print(f"[Share] {current_user.email} removed {share['recipient_email']}'s access to '{share['source_worksheet']}'")
+    has_access, can_share, disabled = _share_modal_sections(current_user.email, ws_name or share["source_worksheet"])
+    return has_access, can_share, disabled, f"Removed {share['recipient_name']}'s access."
+
+
 @app.callback(
     Output("share-ws-modal", "is_open"),
     Output("share-ws-header", "children"),
@@ -5477,46 +5691,8 @@ def open_share_modal(payload, cancel_clicks):
     if ws_state.get("shared_from"):
         return False, "Sharing", html.Div("Tabs shared with you can't be re-shared.", style={"color": "#dc3545"}), "", True, ""
 
-    all_users = list_users()
-
-    # Get recipients who already have access via registry
-    shares = get_shares_from(current_email, payload)
-    recipients_with_access = {s["recipient_email"] for s in shares}
-
-    # Build "Has access" section
-    has_access_items = []
-    for share in shares:
-        dt = datetime.datetime.fromtimestamp(share["shared_at"]).strftime("%Y-%m-%d %H:%M")
-        has_access_items.append(html.Div(
-            f"✓ {share['recipient_name']} ({share['recipient_email']}) on {dt}",
-            style={"fontSize": "12px", "marginBottom": "4px"}
-        ))
-
-    if has_access_items:
-        has_access_section = html.Div([
-            html.Div("Has access:", style={"fontWeight": "bold", "marginBottom": "8px"}),
-            html.Div(has_access_items)
-        ])
-    else:
-        has_access_section = html.Div("Not shared with anyone yet.", style={"color": "#666", "fontSize": "12px"})
-
-    # Build "Share with" section
-    available_users = [u for u in all_users if u["email"] != current_email and u["email"] not in recipients_with_access]
-
-    if not available_users:
-        can_share_section = html.Div("Everyone already has access.", style={"color": "#666", "fontSize": "12px"})
-        share_btn_disabled = True
-    else:
-        options = [
-            {"label": f"{u['name']} ({u['email']})", "value": u['email']}
-            for u in available_users
-        ]
-        can_share_section = html.Div([
-            html.Div("Share with:", style={"fontWeight": "bold", "marginBottom": "8px"}),
-            dbc.Checkbox(id="share-ws-select-all", label="Select all", className="mb-2"),
-            dbc.Checklist(id="share-ws-users", options=options, className="mb-2")
-        ])
-        share_btn_disabled = False
+    has_access_section, can_share_section, share_btn_disabled = \
+        _share_modal_sections(current_email, payload)
 
     return True, f"Sharing: '{payload}'", has_access_section, can_share_section, share_btn_disabled, ""
 
