@@ -6,8 +6,6 @@ from pathlib import Path
 import sys
 
 def get_base_dir():
-    if getattr(sys, 'frozen', False):
-        return Path(sys.executable).parent
     return Path(__file__).parent.parent
 
 def get_config_path(user_email=None):
@@ -35,7 +33,6 @@ DEFAULT_CONFIG = {
     "DB_NAME":           "",
     "DB_USER":           "",
     "DB_PASSWORD":       "",
-    "MYSQL_UPLOAD_PATH": "",
     "worksheets":        ["Worksheet 1"],
 }
 
@@ -76,7 +73,6 @@ def load_config(user_email=None):
                 "DB_NAME":           os.getenv("DB_NAME", ""),
                 "DB_USER":           os.getenv("DB_USER", ""),
                 "DB_PASSWORD":       os.getenv("DB_PASSWORD", ""),
-                "MYSQL_UPLOAD_PATH": os.getenv("MYSQL_UPLOAD_PATH", ""),
             }
         except Exception as e2:
             print(f"[Config] ERROR reading .env: {e2}")

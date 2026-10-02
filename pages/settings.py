@@ -47,42 +47,6 @@ def build_settings_layout():
                         html.Div(id="settings-extract-clock",
                                 className="mt-1 text-primary fw-bold",
                                 style={"fontSize": "12px", "display": "none"}),
-                        dbc.Alert([
-                            html.Strong("Before refreshing: "),
-                        html.Span("Run these exports in MySQL Workbench first:"),
-                            html.Div([
-                                html.Div([
-                                    html.Pre(
-                                        "SELECT USAGE_ID, USER_ID, ACTION_TYPE, TABRUN_TS, TABRUN_MY\n"
-                                        "INTO OUTFILE 'C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/usagefact_extract.csv'\n"
-                                        "FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"'\n"
-                                        "LINES TERMINATED BY '\\n' FROM usagefact;",
-                                        id="sql-query-1",
-                                        style={"fontSize": "11px", "backgroundColor": "#f8f9fa",
-                                               "padding": "8px", "borderRadius": "4px",
-                                               "marginBottom": "4px", "whiteSpace": "pre-wrap"}
-                                    ),
-                                    dcc.Clipboard(target_id="sql-query-1", title="Copy SQL",
-                                                 className="mb-2",
-                                                 style={"fontSize": "10px"}),
-                                ]),
-                                html.Div([
-                                    html.Pre(
-                                        "SELECT USAGE_ID, STUDY_ID\n"
-                                        "INTO OUTFILE 'C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/usagestudylinks_extract.csv'\n"
-                                        "FIELDS TERMINATED BY ','\n"
-                                        "LINES TERMINATED BY '\\n' FROM usagestudylinks;",
-                                        id="sql-query-2",
-                                        style={"fontSize": "11px", "backgroundColor": "#f8f9fa",
-                                               "padding": "8px", "borderRadius": "4px",
-                                               "marginBottom": "4px", "whiteSpace": "pre-wrap"}
-                                    ),
-                                    dcc.Clipboard(target_id="sql-query-2", title="Copy SQL",
-                                                 style={"fontSize": "10px"}),
-                                ]),
-                            ], className="mt-2")
-                        ], color="info", className="mb-3 mt-3", style={"fontSize": "12px"}),
-
                         html.Div(className="mt-3 d-flex gap-2", children=[
                             dbc.Button("🔄 Refresh Extract",
                                       id="settings-refresh-btn",
@@ -135,13 +99,7 @@ def build_settings_layout():
                         ], className="mb-2"),
                         dbc.Label("Password", size="sm", className="fw-bold"),
                         dbc.Input(id="cfg-password", value=cfg["DB_PASSWORD"],
-                                 type="password", size="sm", className="mb-2"),
-                        dbc.Label("MySQL Upload Path", size="sm",
-                                 className="fw-bold"),
-                        dbc.Input(id="cfg-upload-path",
-                                 value=cfg["MYSQL_UPLOAD_PATH"],
-                                 size="sm", className="mb-3",
-                                 placeholder=r"\\server\C$\ProgramData\MySQL\..."),
+                                 type="password", size="sm", className="mb-3"),
                         dbc.Button("💾 Save Configuration",
                                   id="cfg-save-btn",
                                   color="primary", size="sm"),

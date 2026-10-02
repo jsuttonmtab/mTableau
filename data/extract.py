@@ -37,15 +37,6 @@ def _clean(col):
 
 
 
-def _get_csv_paths():
-    cfg         = load_config()
-    upload_path = Path(cfg.get("MYSQL_UPLOAD_PATH", ""))
-    return (
-        upload_path / "usagefact_extract.csv",
-        upload_path / "usagestudylinks_extract.csv",
-    )
-
-
 def extract_exists():
     """True when all five parquet files are present."""
     return (USAGE_PATH.exists() and BRIDGE_PATH.exists()
@@ -178,9 +169,6 @@ def build_extract(progress_callback=None):
             return True
         return False
 
-    usagefact_csv, usagelinks_csv = _get_csv_paths()
-    use_csv_fallback = usagefact_csv.exists() and usagelinks_csv.exists()
-
     # ── Temp workspace ────────────────────────────────────────────────────────
     temp_dir = DATA_DIR / "temp"
     if temp_dir.exists():
@@ -247,9 +235,8 @@ def build_extract(progress_callback=None):
             del clients, users, studies
         except Exception as e:
             if progress_callback:
-                progress_callback(f"[WARNING] Could not fetch lookup tables: {e}", 5)
-            if not use_csv_fallback:
-                return False, f"Cannot fetch lookup tables and CSV fallback unavailable: {e}"
+                progress_callback(f"❌ Could not fetch lookup tables from MySQL: {e}", 5)
+            return False, f"Cannot fetch lookup tables from MySQL: {e}"
 
         # ── Step 2: Initialise DuckDB ─────────────────────────────────────────
         if cancelled():
@@ -291,10 +278,14 @@ def build_extract(progress_callback=None):
             con.execute("ATTACH '' AS mysql_db (TYPE mysql, SECRET mtab_mysql, READ_ONLY)")
             print("[Extract] MySQL extension attached")
         except Exception as e:
-            print(f"[WARNING] MySQL extension not available, will use pandas fallback: {e}")
-            mysql_attached = False
-        else:
-            mysql_attached = True
+            # No fallback: the build reads MySQL directly. (It used to fall back to
+            # CSV exports, which silently built the extract from stale files.)
+            con.close()
+            msg = f"❌ Could not connect to MySQL for the extract: {e}"
+            print(f"[Extract] {msg}")
+            if progress_callback:
+                progress_callback(msg, 8)
+            return False, msg
 
         # Load lookup tables
         con.execute(f"CREATE TABLE clients AS SELECT * FROM read_csv_auto('{str(temp_dir / 'clients.csv')}')")
@@ -314,61 +305,18 @@ def build_extract(progress_callback=None):
             progress_callback(
                 f"Step 3/5: Building usage.parquet (USAGE_ID grain)... ({elapsed()})", 10)
 
-        # Build usage data - prefer MySQL extension, fallback to CSV
+        # Load usagefact straight from MySQL
         con.execute("DROP TABLE IF EXISTS raw_facts")
-
-        if mysql_attached:
-            # Use MySQL directly - much faster for large tables
-            con.execute("""
-                CREATE TABLE raw_facts AS
-                SELECT
-                    USAGE_ID,
-                    USER_ID,
-                    ACTION_TYPE,
-                    TABRUN_TS,
-                    TABRUN_MY
-                FROM mysql_db.usagefact
-            """)
-        elif use_csv_fallback:
-            # Fall back to CSV if MySQL unavailable
-            # Copy CSV locally to avoid network stalls (important for PyInstaller)
-            if progress_callback:
-                progress_callback(f"Copying {usagefact_csv.name} locally (this may take a minute)...", 12)
-            local_usage_csv = temp_dir / usagefact_csv.name
-            shutil.copy2(str(usagefact_csv), str(local_usage_csv))
-            if progress_callback:
-                progress_callback("Local copy complete, reading with pandas in chunks...", 15)
-
-            # Create persistent DuckDB table for chunked inserts
-            con.execute("""
-                CREATE TABLE raw_facts (
-                    USAGE_ID BIGINT,
-                    USER_ID BIGINT,
-                    ACTION_TYPE VARCHAR,
-                    TABRUN_TS TIMESTAMP,
-                    TABRUN_MY TIMESTAMP
-                )
-            """)
-
-            # Read CSV in chunks to avoid memory overload (important for PyInstaller)
-            for i, chunk in enumerate(pd.read_csv(
-                str(local_usage_csv),
-                header=None,
-                names=['USAGE_ID', 'USER_ID', 'ACTION_TYPE', 'TABRUN_TS', 'TABRUN_MY'],
-                chunksize=1_000_000,
-                na_values=['\\N', '0000-00-00 00:00:00'],
-                on_bad_lines='skip'
-            )):
-                # Register chunk as view and insert into table
-                con.register('chunk_view', chunk)
-                con.execute("INSERT INTO raw_facts SELECT * FROM chunk_view")
-                if progress_callback:
-                    progress_callback(
-                        f"Loading usage data: {(i+1)*1_000_000:,} rows...", 15 + int(i * 0.5)
-                    )
-        else:
-            con.close()
-            return False, "MySQL extension unavailable and CSV fallback not available"
+        con.execute("""
+            CREATE TABLE raw_facts AS
+            SELECT
+                USAGE_ID,
+                USER_ID,
+                ACTION_TYPE,
+                TABRUN_TS,
+                TABRUN_MY
+            FROM mysql_db.usagefact
+        """)
 
         if progress_callback:
             progress_callback(
@@ -417,59 +365,13 @@ def build_extract(progress_callback=None):
             progress_callback(
                 f"Step 4/5: Building bridge.parquet (USAGE_ID × STUDY_ID)... ({elapsed()})", 48)
 
-        # Build bridge - prefer MySQL extension, fallback to CSV
-        if mysql_attached:
-            # Use MySQL directly
-            con.execute(f"""
-                COPY (
-                    SELECT USAGE_ID, STUDY_ID
-                    FROM mysql_db.usagestudylinks
-                ) TO '{str(temp_bridge)}' (FORMAT PARQUET, COMPRESSION ZSTD)
-            """)
-        elif use_csv_fallback:
-            # Fall back to CSV if MySQL unavailable
-            # Copy CSV locally to avoid network stalls (important for PyInstaller)
-            if progress_callback:
-                progress_callback(f"Copying {usagelinks_csv.name} locally (this may take a minute)...", 72)
-            local_links_csv = temp_dir / usagelinks_csv.name
-            shutil.copy2(str(usagelinks_csv), str(local_links_csv))
-            if progress_callback:
-                progress_callback("Local copy complete, reading with pandas in chunks...", 74)
-
-            # Create persistent DuckDB table for chunked inserts
-            con.execute("""
-                CREATE TABLE bridge_facts (
-                    USAGE_ID BIGINT,
-                    STUDY_ID BIGINT
-                )
-            """)
-
-            # Read CSV in chunks to avoid memory overload (important for PyInstaller)
-            for i, chunk in enumerate(pd.read_csv(
-                str(local_links_csv),
-                header=None,
-                names=['USAGE_ID', 'STUDY_ID'],
-                chunksize=1_000_000,
-                na_values=['\\N'],
-                on_bad_lines='skip'
-            )):
-                # Register chunk as view and insert into table
-                con.register('bridge_chunk_view', chunk)
-                con.execute("INSERT INTO bridge_facts SELECT * FROM bridge_chunk_view")
-                if progress_callback:
-                    progress_callback(
-                        f"Loading bridge data: {(i+1)*1_000_000:,} rows...", 74 + int(i * 0.25)
-                    )
-
-            # Write to parquet
-            con.execute(f"""
-                COPY (
-                    SELECT USAGE_ID, STUDY_ID FROM bridge_facts
-                ) TO '{str(temp_bridge)}' (FORMAT PARQUET, COMPRESSION ZSTD)
-            """)
-        else:
-            con.close()
-            return False, "MySQL extension unavailable and CSV fallback not available"
+        # Study links straight from MySQL
+        con.execute(f"""
+            COPY (
+                SELECT USAGE_ID, STUDY_ID
+                FROM mysql_db.usagestudylinks
+            ) TO '{str(temp_bridge)}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        """)
 
         if progress_callback:
             progress_callback(
@@ -505,34 +407,26 @@ def build_extract(progress_callback=None):
             con.close()
             return False, "Cancelled"
 
-        if mysql_attached:
-            # Try DuckDB MySQL extension first (avoids timeout on large tables)
-            try:
-                con.execute(f"""
-                    COPY (
-                        SELECT USAGE_ID, TRIM(CAST(QMNEM AS VARCHAR)) AS QMNEM
-                        FROM mysql_db.usageqmnem
-                    ) TO '{str(temp_qmnem)}' (FORMAT PARQUET, COMPRESSION ZSTD)
-                """)
-            except Exception as e:
-                # Fallback to chunked pandas if DuckDB MySQL extension fails
-                print(f"[WARNING] DuckDB MySQL extension failed: {e}. Using chunked pandas fallback.")
-                with engine.connect() as conn:
-                    chunks = []
-                    for chunk in pd.read_sql(
-                        text("SELECT USAGE_ID, QMNEM FROM usageqmnem"), conn, chunksize=500000
-                    ):
-                        chunk['QMNEM'] = chunk['QMNEM'].astype(str).str.encode('ascii', errors='replace').str.decode('ascii')
-                        chunks.append(chunk)
-                qmnem_df = pd.concat(chunks, ignore_index=True)
-                qmnem_df.to_parquet(str(temp_qmnem), compression='zstd', index=False)
-        else:
-            # Fallback to pandas if MySQL extension unavailable
+        # Try DuckDB MySQL extension first (avoids timeout on large tables)
+        try:
+            con.execute(f"""
+                COPY (
+                    SELECT USAGE_ID, TRIM(CAST(QMNEM AS VARCHAR)) AS QMNEM
+                    FROM mysql_db.usageqmnem
+                ) TO '{str(temp_qmnem)}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """)
+        except Exception as e:
+            # Fallback to chunked pandas if DuckDB MySQL extension fails
+            print(f"[WARNING] DuckDB MySQL extension failed: {e}. Using chunked pandas fallback.")
             with engine.connect() as conn:
-                qmnem_data = pd.read_sql(
-                    text("SELECT USAGE_ID, QMNEM FROM usageqmnem"), conn
-                )
-            qmnem_data.to_parquet(temp_qmnem, compression="zstd", index=False)
+                chunks = []
+                for chunk in pd.read_sql(
+                    text("SELECT USAGE_ID, QMNEM FROM usageqmnem"), conn, chunksize=500000
+                ):
+                    chunk['QMNEM'] = chunk['QMNEM'].astype(str).str.encode('ascii', errors='replace').str.decode('ascii')
+                    chunks.append(chunk)
+            qmnem_df = pd.concat(chunks, ignore_index=True)
+            qmnem_df.to_parquet(str(temp_qmnem), compression='zstd', index=False)
 
         if progress_callback:
             progress_callback(

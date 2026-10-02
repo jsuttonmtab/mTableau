@@ -49,15 +49,7 @@ try:
 except ImportError:
     HAS_AUTH = False
 
-if getattr(sys, 'frozen', False):
-    _base = Path(sys.executable).parent
-    _assets_candidate = _base / "_internal" / "assets"
-    if _assets_candidate.exists():
-        _assets_folder = str(_assets_candidate)
-    else:
-        _assets_folder = str(_base / "assets")
-else:
-    _assets_folder = "assets"
+_assets_folder = "assets"
 
 app = Dash(
     __name__,
@@ -71,9 +63,10 @@ app = Dash(
 app.title = "mTableau"
 
 # Web mode detection and Flask-Login setup
-IS_FROZEN = getattr(sys, "frozen", False)
-IS_WEB = not IS_FROZEN and os.environ.get("MTABLEAU_BASE") is not None
-print(f"[Auth] IS_WEB={IS_WEB}, IS_FROZEN={IS_FROZEN}, MTABLEAU_BASE={os.environ.get('MTABLEAU_BASE')}")
+# Web mode (sign-in, per-user data) when MTABLEAU_BASE is set, as on MUS-WEB.
+# Without it the app runs unauthenticated for local testing.
+IS_WEB = os.environ.get("MTABLEAU_BASE") is not None
+print(f"[Auth] IS_WEB={IS_WEB}, MTABLEAU_BASE={os.environ.get('MTABLEAU_BASE')}")
 
 # ── Per-user isolation helper ──────────────────────────────────────────────────
 def _is_admin():
@@ -4963,10 +4956,9 @@ def toggle_settings_cancel(n_intervals, n_clicks):
     State("cfg-dbname",      "value"),
     State("cfg-user",        "value"),
     State("cfg-password",    "value"),
-    State("cfg-upload-path", "value"),
     prevent_initial_call=True
 )
-def save_config_callback(n_clicks, host, port, dbname, user, password, upload_path):
+def save_config_callback(n_clicks, host, port, dbname, user, password):
     if not n_clicks or not _is_admin():
         raise dash.exceptions.PreventUpdate
     cfg = load_config()
@@ -4976,7 +4968,6 @@ def save_config_callback(n_clicks, host, port, dbname, user, password, upload_pa
         "DB_NAME":           dbname or "",
         "DB_USER":           user or "",
         "DB_PASSWORD":       password or "",
-        "MYSQL_UPLOAD_PATH": upload_path or "",
     })
     save_config(cfg)
     return dbc.Alert("✅ Configuration saved!", color="success",
@@ -5067,18 +5058,12 @@ def handle_extract(n_clicks, n_intervals):
             extract_messages   = ["Starting extract..."]
             extract_pct        = 0
             extract_start_time = time.time()
-            if IS_WEB and not IS_FROZEN:
-                # Own process: if the build runs out of memory only it dies,
-                # not the web app. Its output still goes to the service log.
-                import subprocess
-                _extract_proc = subprocess.Popen(
-                    [sys.executable, "-m", "data.extract_runner"],
-                    cwd=str(get_base_dir()), start_new_session=True)
-            else:
-                # Desktop (PyInstaller) can't launch "python -m"; run in-process.
-                from data.extract_runner import run as _run_extract
-                threading.Thread(target=_run_extract, kwargs={"in_process": True},
-                                 daemon=True).start()
+            # Own process: if the build runs out of memory only it dies,
+            # not the web app. Its output still goes to the service log.
+            import subprocess
+            _extract_proc = subprocess.Popen(
+                [sys.executable, "-m", "data.extract_runner"],
+                cwd=str(get_base_dir()), start_new_session=True)
         visible = {"display": "block"}
         return (
             html.Div("Starting...", className="text-muted", style={"fontSize": "12px"}),

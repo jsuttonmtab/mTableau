@@ -40,9 +40,9 @@ def write_status(status):
     tmp.replace(STATUS_PATH)
 
 
-def run(in_process=False):
+def run():
     """Build the extract, keeping extract_status.json up to date."""
-    status = {"pid": os.getpid(), "in_process": in_process, "started": time.time(),
+    status = {"pid": os.getpid(), "started": time.time(),
               "finished": None, "done": False, "pct": 0, "messages": ["Starting extract..."]}
     write_status(status)
     try:
