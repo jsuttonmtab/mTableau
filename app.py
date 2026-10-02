@@ -730,7 +730,10 @@ def build_html_table(df, display_df=None, rows=None, max_display=1000):
                     cls = cls + " mt-nv"
                 if v != "":
                     prev_vals[c] = v
-            cells.append(html.Td(disp[c_i], className=cls) if cls else html.Td(disp[c_i]))
+            text = disp[c_i]
+            if c not in row_set and _is_zero(raw[c_i]):
+                text = ""                              # zeros are shown as blanks
+            cells.append(html.Td(text, className=cls) if cls else html.Td(text))
         body_rows.append(html.Tr(cells, className=tr_cls) if tr_cls else html.Tr(cells))
 
     truncation_notice = None

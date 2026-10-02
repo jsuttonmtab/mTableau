@@ -862,9 +862,12 @@ document.addEventListener('keydown', function(e) {
             if (valA === '') valA = '\x00';
             if (valB === '') valB = '\x00';
 
-            // Try numeric comparison
-            const numA = parseFloat(valA.replace(/,/g, ''));
-            const numB = parseFloat(valB.replace(/,/g, ''));
+            // Try numeric comparison (zeros are shown blank, so a blank next to
+            // a number counts as 0)
+            let numA = parseFloat(valA.replace(/,/g, ''));
+            let numB = parseFloat(valB.replace(/,/g, ''));
+            if (valA === '\x00' && !isNaN(numB)) numA = 0;
+            if (valB === '\x00' && !isNaN(numA)) numB = 0;
             if (!isNaN(numA) && !isNaN(numB)) {
                 return direction === 'asc' ? numA - numB : numB - numA;
             }
