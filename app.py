@@ -985,8 +985,15 @@ def _plan_formula_fields(all_fields, global_calcs):
     return formula_calcs, fixed_specs, extra
 
 
+def _fixed_side_sql(spec, where, measure, calcs):
+    """The small query behind a FIXED calc: one row per (dim, value)."""
+    agg, value, dim, fmt = spec
+    return build_duckdb_query([dim, value], where, date_formats={value: "raw"},
+                              measure=measure, global_calcs=calcs)
+
+
 def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
-                    rows, cols, measure, global_calcs, errors=None):
+                    rows, cols, measure, global_calcs, errors=None, scan=None):
     """Add formula columns to a query result, then drop helper fields and re-combine
     rows that only differed by them (so the result is at the shelves' grain)."""
     calcs = global_calcs if isinstance(global_calcs, dict) else {}
@@ -1004,9 +1011,13 @@ def _apply_formulas(df, formula_calcs, fixed_specs, extra_fields, duck_where,
         try:
             # "raw": real values, not the default month labels the builder gives
             # date fields (MAX over "Sep 2025"-style text was alphabetical).
-            side = run_extract_query(build_duckdb_query(
-                [dim, value], duck_where, date_formats={value: "raw"}, measure=measure,
-                global_calcs=calcs))
+            spec = (agg, value, dim, fmt)
+            full_side = _fixed_side_sql(spec, duck_where, measure, calcs)
+            if scan is not None:
+                # Same filters as the main query: reuse the shared filtered scan.
+                side = scan.run(lambda w, sp=spec: _fixed_side_sql(sp, w, measure, calcs), full_side)
+            else:
+                side = run_extract_query(full_side)
             per_dim = side.groupby(dim)[value].agg(_FIXED_PANDAS_AGG.get(agg, "max"))
             if fmt:
                 per_dim = pd.to_datetime(per_dim, errors="coerce").dt.strftime(str(fmt))
@@ -1103,9 +1114,12 @@ class _SharedUsageScan:
     MAX_ROWS = 3_000_000
 
     def __init__(self, duck_where, full_sql):
-        """full_sql: the main query as built normally. Only the usage columns it
-        references (plus join keys) are kept; the summary query's fields are a
-        subset of the main query's, so this covers both."""
+        """full_sql: the main query as built normally, or a list of the queries
+        that will use the scan (main + FIXED side queries). Only the usage
+        columns they reference (plus join keys) are kept; the summary query's
+        fields are a subset of the main query's."""
+        if isinstance(full_sql, (list, tuple)):
+            full_sql = "\n".join(str(q) for q in full_sql)
         from data.extract import USAGE_PATH
         self.usage_ref = f"read_parquet('{str(USAGE_PATH)}')"
         self.con = None
@@ -4311,8 +4325,10 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
         if use_duckdb:
             _t0 = time.time()
             print(f"[Query] 0. Running main query...")
-            _scan = _SharedUsageScan(duck_where, sql)
             _gc = global_calcs if isinstance(global_calcs, dict) else {}
+            _scan = _SharedUsageScan(
+                duck_where,
+                [sql] + [_fixed_side_sql(sp, duck_where, measure, _gc) for sp in fixed_specs.values()])
             df = _scan.run(lambda w: build_duckdb_query(duck_fields, w, date_formats=query_date_formats,
                                                         measure=measure, global_calcs=_gc),
                            sql)
@@ -4324,7 +4340,7 @@ def run_worksheet_query(n_clicks, rows_data, cols_data, field_filters_data,
             calc_errors = []
             df = _apply_formulas(df, formula_calcs, fixed_specs, formula_extra_fields,
                                  duck_where, rows, cols, measure, global_calcs,
-                                 errors=calc_errors)
+                                 errors=calc_errors, scan=_scan)
             if calc_errors:
                 warning = dbc.Alert(
                     ["⚠️ Some calculations couldn't be computed and are left blank: ",
