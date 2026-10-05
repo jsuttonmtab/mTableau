@@ -1117,6 +1117,10 @@ class _SharedUsageScan:
         try:
             con = duckdb.connect()
             con.execute("SET memory_limit='2GB'")
+            # Row order in the temp table doesn't matter (the queries sort), and
+            # keeping it would force the capped scan onto a single thread
+            # (measured on MUS-WEB: 12.0s with order kept vs 6.3s without).
+            con.execute("SET preserve_insertion_order=false")
             t = time.time()
             # Capped: with broad filters most of the extract would land in the temp
             # table (slower and memory-heavy), so stop early and use the full queries.
