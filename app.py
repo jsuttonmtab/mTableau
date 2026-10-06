@@ -645,56 +645,36 @@ def _get_options_for_field(field, fmt, calcs):
 # HTML Table builder
 # ─────────────────────────────────────────────
 
-def build_html_table(df, display_df=None, rows=None, max_display=1000):
-    rows       = rows or []
-    display_df = display_df if display_df is not None else df
-    total_rows = len(df)
-    truncated  = total_rows > max_display
-    if truncated:
-        df         = df.iloc[:max_display].copy()
-        display_df = display_df.iloc[:max_display].copy()
+def _table_html(df, display_df, rows):
+    """The result table as one HTML string (same markup the old component tree
+    produced). Every text and attribute value is HTML-escaped."""
+    import html as _h
+    esc = lambda v: _h.escape("" if v is None else str(v), quote=True)
+    columns = list(df.columns)
+    row_set = set(rows)
 
-    header = html.Thead(
-        html.Tr([
-            html.Th(
-                [c, html.Div(className="col-resizer")],
-                **{"data-col": c},
-                style={
-                    "position":        "relative",
-                    "backgroundColor": "#2d6a4f" if c == "Grand Total"
-                                       else "#1e3a5f" if c not in rows
-                                       else "#0f1f3d",
-                    "color":           "white",
-                    "fontWeight":      "bold",
-                    "fontSize":        "12px",
-                    "padding":         "5px 10px",
-                    "whiteSpace":      "nowrap",
-                    "userSelect":      "none",
-                    "minWidth":        "150px" if c in rows else "80px",
-                    "cursor":          "default",
-                    "borderLeft":      "2px solid #adb5bd" if c == "Grand Total"
-                                       else "2px solid #adb5bd" if i > 0 and c not in rows and df.columns[i-1] in rows
-                                       else "none",
-                    "borderRight":     "2px solid #adb5bd" if c == "Grand Total" else "1px solid #1a3358",
-                }
-            )
-            for i, c in enumerate(df.columns)
-        ]),
-        style={"position": "sticky", "top": "0", "zIndex": "2"}
-    )
+    th = []
+    for i, c in enumerate(columns):
+        bg = "#2d6a4f" if c == "Grand Total" else "#1e3a5f" if c not in row_set else "#0f1f3d"
+        bl = ("2px solid #adb5bd" if c == "Grand Total"
+              else "2px solid #adb5bd" if i > 0 and c not in row_set and columns[i - 1] in row_set
+              else "none")
+        br = "2px solid #adb5bd" if c == "Grand Total" else "1px solid #1a3358"
+        mw = "150px" if c in row_set else "80px"
+        th.append(f'<th data-col="{esc(c)}" style="position:relative;background-color:{bg};color:white;'
+                  f'font-weight:bold;font-size:12px;padding:5px 10px;white-space:nowrap;user-select:none;'
+                  f'min-width:{mw};cursor:default;border-left:{bl};border-right:{br}">'
+                  f'{esc(c)}<div class="col-resizer"></div></th>')
+    head = ('<thead style="position:sticky;top:0;z-index:2"><tr>' + "".join(th) + "</tr></thead>")
 
-    # Body cells are styled by CSS classes (assets/custom.css, "mtab-table") rather
-    # than inline styles: inline styles made every cell ~400 bytes, so a 600 x 65
-    # table was ~16 MB to send and render. Row-wide looks go on the <tr>.
+    # Cell looks come from CSS classes (assets/custom.css, "mtab-table"):
     #   tr.mt-first / tr.mt-gt      first data row / Grand Total row
     #   td.mt-r  (+ mt-nv)          row-field cell (+ starts a new value: top border)
     #   td.mt-fm / td.mt-gtc        first measure column / Grand Total column
-    columns    = list(df.columns)
-    row_set    = set(rows)
     first_meas = next((i for i, c in enumerate(columns) if i > 0 and c not in row_set
                        and columns[i - 1] in row_set), None)
-    gt_col     = columns.index("Grand Total") if "Grand Total" in columns else None
-    col_class  = []
+    gt_col = columns.index("Grand Total") if "Grand Total" in columns else None
+    col_class = []
     for i, c in enumerate(columns):
         cls = []
         if c in row_set:
@@ -705,12 +685,11 @@ def build_html_table(df, display_df=None, rows=None, max_display=1000):
             cls.append("mt-gtc")
         col_class.append(" ".join(cls))
 
-    values  = df.astype(object).where(df.notna(), None).values.tolist()
-    shown   = [[("" if v is None else str(v)) for v in r]
-               for r in display_df.reindex(columns=columns).astype(object)
-                                  .where(display_df.reindex(columns=columns).notna(), None).values.tolist()]
-    body_rows = []
-    prev_vals = {}
+    values = df.astype(object).where(df.notna(), None).values.tolist()
+    disp_df = display_df.reindex(columns=columns)
+    shown = [[("" if v is None else str(v)) for v in r]
+             for r in disp_df.astype(object).where(disp_df.notna(), None).values.tolist()]
+    out, prev_vals = [], {}
     for r_i, (raw, disp) in enumerate(zip(values, shown)):
         first_val = "" if raw[0] is None else str(raw[0])
         tr_cls = "mt-gt" if first_val == "Grand Total" else ("mt-first" if r_i == 0 else None)
@@ -725,34 +704,77 @@ def build_html_table(df, display_df=None, rows=None, max_display=1000):
                     prev_vals[c] = v
             text = disp[c_i]
             if c not in row_set and _is_zero(raw[c_i]):
-                text = ""                              # zeros are shown as blanks
-            cells.append(html.Td(text, className=cls) if cls else html.Td(text))
-        body_rows.append(html.Tr(cells, className=tr_cls) if tr_cls else html.Tr(cells))
+                text = ""                                  # zeros are shown as blanks
+            cells.append(f'<td class="{cls}">{esc(text)}</td>' if cls else f"<td>{esc(text)}</td>")
+        out.append((f'<tr class="{tr_cls}">' if tr_cls else "<tr>") + "".join(cells) + "</tr>")
+    return ('<table class="mtab-table" style="border-collapse:collapse;table-layout:fixed;'
+            'width:max-content">' + head + "<tbody>" + "".join(out) + "</tbody></table>")
 
-    truncation_notice = None
+
+def build_html_table(df, display_df=None, rows=None, max_display=1000):
+    """
+    Result table for display. The table is sent as ONE HTML string inside a
+    dcc.Store and written into an empty container by a clientside callback
+    (see "mt-table-html" below). It used to be a tree of html.Tr/html.Td
+    components, one per cell (~21,000 for an 850 x 25 table); Dash re-processes
+    its whole component tree on every interaction, so each tab switch, filter
+    open or Run click paid for every cell of every tab (1-3 s per click).
+    """
+    import uuid
+    rows       = rows or []
+    display_df = display_df if display_df is not None else df
+    total_rows = len(df)
+    truncated  = total_rows > max_display
     if truncated:
-        truncation_notice = html.Div(
+        df         = df.iloc[:max_display].copy()
+        display_df = display_df.iloc[:max_display].copy()
+
+    uid = uuid.uuid4().hex
+    table_div = html.Div(
+        [dcc.Store(id={"type": "mt-table-html", "index": uid},
+                   data=_table_html(df, display_df, rows)),
+         html.Div(id={"type": "mt-table-host", "index": uid})],
+        style={"overflowX": "auto", "overflowY": "auto",
+               "maxHeight": "calc(100vh - 220px)",
+               "border": "1px solid #dee2e6", "borderRadius": "4px",
+               "borderBottom": "2px solid #adb5bd", "position": "relative", "userSelect": "text"}
+    )
+    if truncated:
+        notice = html.Div(
             f"Showing first {max_display:,} of {total_rows:,} rows — Export to see all data.",
             className="text-muted text-center py-1",
             style={"fontSize": "11px", "borderTop": "1px solid #dee2e6",
                    "backgroundColor": "#f8f9fa"}
         )
-
-    table_div = html.Div(
-        html.Table(
-            [header, html.Tbody(body_rows)],
-            className="mtab-table",
-            style={"borderCollapse": "collapse", "tableLayout": "fixed",
-                   "width": "max-content"}
-        ),
-        style={"overflowX": "auto", "overflowY": "auto",
-               "maxHeight": "calc(100vh - 220px)",
-               "border": "1px solid #dee2e6", "borderRadius": "4px",
-               "borderBottom": "2px solid #adb5bd", "position": "relative","userSelect": "text"}
-    )
-    if truncation_notice:
-        return html.Div([table_div, truncation_notice])
+        return html.Div([table_div, notice])
     return table_div
+
+
+# Writes each result table's HTML into its container. Runs in the browser; a
+# table is only (re)written when its HTML changes. The container may not be in
+# the DOM yet when this runs, so retry briefly.
+app.clientside_callback(
+    """
+    function(htmls) {
+        const ctx = window.dash_clientside.callback_context;
+        (ctx.inputs_list[0] || []).forEach(function(item) {
+            const html = item.value || '';
+            const id = JSON.stringify({index: item.id.index, type: 'mt-table-host'});
+            let tries = 0;
+            (function put() {
+                const host = document.getElementById(id);
+                if (!host) { if (tries++ < 40) setTimeout(put, 25); return; }
+                if (host.__mtHtml === html) return;
+                host.innerHTML = html;
+                host.__mtHtml = html;
+            })();
+        });
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("mt-table-sink", "data"),
+    Input({"type": "mt-table-html", "index": ALL}, "data"),
+)
 
 
 # ─────────────────────────────────────────────
@@ -1430,6 +1452,7 @@ def _get_layout():
     dcc.Store(id="ws-dirty",               data=[]),   # [ws_key] with unsaved changes
     dcc.Store(id="unsaved-pending",        data=""),   # tab the user tried to switch to
     dcc.Store(id="ws-dirty-sink",          data=0),
+    dcc.Store(id="mt-table-sink",          data=0),
     dcc.Store(id="save-btn-sink",          data=0),
     html.Button(id="unsaved-trigger-btn",       style={"display": "none"}),
     html.Button(id="save-tab-trigger-btn",      style={"display": "none"}),
